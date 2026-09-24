@@ -178,6 +178,8 @@ npm run gpu-parity -- --only 3461168300 --out parity.json   # CPU/GPU 逐效果�
   - `3582367840` 的某个效果：预处理器在 `#endif` 报 `Expected control line`（`#if` 结构不被
     shaderfrog 预处理器接受）。
   用 `--log` 或 `DSH_WE_FX_TRACE=1`（会打印生成的 JS 出错行）可定位。
+  逐 pass 取证用 `DSH_WE_FX_DUMP=1`（打印每个 pass 产出的尺寸与像素摘要 ——
+  找"哪一个 pass 先变成常量"）；配合 `effects: { skipDegenerate: false }` 保留退化输出。
 - 更多缺陷与修复进度见 [Issues](https://github.com/YV3507/we-static-frame/issues)。
 
 ## 许可证

@@ -29,6 +29,25 @@ const MAX_JSON_GLSL_PIXELS = 65536;
 // A/B 开关 (与 DSH_WE_NO_FX / DSH_WE_NO_FX_CHAIN 同风格): 关掉数据驱动通路, 回到
 // "猜名 GLSL + 记 degraded" 的旧行为。默认开 —— 仅用于逐帧 SHA 对照取证。
 const JSON_FX_OFF = process.env.DSH_WE_NO_FXJSON === '1';
+// 逐 pass 取证开关（见 effects.js 的退化保护 / issue #2）
+const DUMP = process.env.DSH_WE_FX_DUMP === '1';
+
+/** 像素摘要：采样亮度均值 / 覆盖度（alpha>8）/ 不同颜色数，用于"哪个 pass 先变常量"。 */
+function summarizeRgba(m) {
+  if (!m || !m.rgba || !m.width || !m.height) return '(no rgba)';
+  const n = m.width * m.height, st = Math.max(1, Math.floor(n / 200));
+  let sum = 0, cov = 0, tot = 0;
+  const colors = new Set();
+  for (let i = 0; i < n; i += st) {
+    const q = i * 4;
+    sum += (m.rgba[q] * 299 + m.rgba[q + 1] * 587 + m.rgba[q + 2] * 114) / 1000;
+    if (m.rgba[q + 3] > 8) cov++;
+    tot++;
+    if (colors.size < 64) colors.add(m.rgba[q] + ',' + m.rgba[q + 1] + ',' + m.rgba[q + 2] + ',' + m.rgba[q + 3]);
+  }
+  return 'mean=' + (sum / Math.max(1, tot)).toFixed(1) + ' cov=' + ((100 * cov) / Math.max(1, tot)).toFixed(1) + '%'
+    + ' colors=' + (colors.size >= 64 ? '64+' : colors.size);
+}
 
 /** combo 值一律转字符串: shaderfrog 预处理对**数值** 0 会删 token (`#if MASK || X` → `#if  || X`)。
  *  取证: scripts/tmp-blurprecise-probe3.mjs (number 0 FAIL / string "0" OK)。 */
@@ -234,6 +253,11 @@ function installEffectJson(proto) {
       if (!out) return img; // 单 pass 失败 → 整个效果不应用 (与 GLSL 通路同策略)
       if (p.target) rts.set(p.target, out);
       else result = out;
+      // 逐 pass 取证 (DSH_WE_FX_DUMP=1): 打印每个 pass 产出的尺寸与像素摘要。
+      // 排查"效果输出退化"时用它找**哪一个 pass 先变成常量**（配合 effects.skipDegenerate=false）。
+      if (DUMP) this.log('FX-DUMP ' + name + ' pass' + p.index
+        + ' → ' + (p.target || '(direct)') + ' ' + out.width + 'x' + out.height
+        + ' ' + summarizeRgba(out));
     }
     if (!result) {
       // 全部 pass 都写了 target → 取最后一个 target 的结果
