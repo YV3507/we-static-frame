@@ -259,6 +259,7 @@ function installEffectJson(proto) {
         + ' → ' + (p.target || '(direct)') + ' ' + out.width + 'x' + out.height
         + (rtDef ? ' fmt=' + (rtDef.format || '?') + ' scale=' + (rtDef.scale != null ? rtDef.scale : 1) : '')
         + ' binds=' + ((this._fxJsonLastBinds || []).join(','))
+        + ' src=' + (this._fxJsonLastSrc || '?')
         + ' ' + summarizeRgba(out));
     }
     if (!result) {
@@ -287,6 +288,8 @@ function installEffectJson(proto) {
         if (nf !== fragX || (nv && nv !== vertX)) { fragX = nf; if (nv) vertX = nv; break; }
       }
     }
+    // 取证：记录本 pass 实际编译的源码签名（用于确认 shaderPatch 是否作用到了这个 pass）
+    if (DUMP) this._fxJsonLastSrc = String(fragX).slice(0, 60).replace(/\s+/g, ' ');
     let compiled;
     try {
       compiled = compileGlsl({
