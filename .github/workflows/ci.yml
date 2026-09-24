@@ -19,8 +19,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         node: [18, 22]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
       # 仓库不含 lockfile ⇒ 用 install（可选依赖 supreium-headless-gl 在 CI 上装不上也正常，
