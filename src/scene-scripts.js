@@ -351,6 +351,42 @@ function makeOwnerRef(objects) {
   };
 }
 
+// ── 沙箱 console ────────────────────────────────────────────────────────────
+// **绝不写宿主的 stdout/stderr**：工坊脚本常年在 update()/init() 里 console.log
+// (实测 3660962877 的脚本每帧打印一个 Vec3)，直接透传宿主 console 会污染调用方的
+// stdout —— CLI `--json` 的第一行变成 `Vec3 { x: … }`，JSON.parse 直接失败。
+// 改为转投渲染器的 log 回调（未提供即静默丢弃），与效果降级走同一条诊断通道。
+function _fmtArg(v) {
+  if (v == null) return String(v);
+  if (Array.isArray(v)) return '[' + v.map(_fmtArg).join(', ') + ']';
+  if (typeof v === 'object') {
+    // Vec2/Vec3 之类的数值对象打印成 "x y z"，比 util.inspect 的一行更可读
+    if (typeof v.x === 'number' && typeof v.y === 'number') {
+      return v.z === undefined ? `${v.x} ${v.y}` : `${v.x} ${v.y} ${v.z}`;
+    }
+    try { return JSON.stringify(v); } catch { return '[object]'; }
+  }
+  return String(v);
+}
+function makeSandboxConsole(log) {
+  const emit = (level, args) => {
+    if (typeof log !== 'function') return;
+    try { log('[scene-script:' + level + '] ' + args.map(_fmtArg).join(' ')); } catch { /* 日志失败不影响脚本 */ }
+  };
+  // 常见方法名都给全: 脚本可能调用 console.warn/error/debug/table 等
+  return {
+    log: (...a) => emit('log', a),
+    info: (...a) => emit('info', a),
+    warn: (...a) => emit('warn', a),
+    error: (...a) => emit('error', a),
+    debug: (...a) => emit('debug', a),
+    trace: (...a) => emit('trace', a),
+    dir: (...a) => emit('dir', a),
+    table: (...a) => emit('table', a),
+    group: () => {}, groupEnd: () => {}, time: () => {}, timeEnd: () => {}, assert: () => {},
+  };
+}
+
 // 编译脚本: 返回 { update, applyUserProperties, init, ... } 函数 (vm 沙箱)
 // opts: { canvasSize, userProps, shared, thisScene, ownerRef, runtime }
 // NSL 模块映射: import * as X from 'WEColor'/'WEMath'/'WEVector' → 对应全局对象
@@ -391,7 +427,9 @@ function compileScript(source, opts = {}) {
     __exports: {},
     __scriptProps: null, // export var scriptProperties = ... 写入
     __scriptProperties: null, // 脚本内 scriptProperties 引用
-    Date, Math, console, JSON, Number, String, Boolean, Object, Array, Set, Map, Promise,
+    Date, Math, JSON, Number, String, Boolean, Object, Array, Set, Map, Promise,
+    // console 走沙箱实现 (转投 log 回调, 不碰宿主 stdout/stderr) —— 见 makeSandboxConsole
+    console: makeSandboxConsole(opts.log),
     Float32Array, Float64Array, Int32Array, Uint8Array, ArrayBuffer,
     parseFloat, parseInt, isNaN, isFinite, Infinity, NaN, undefined,
     Vec2,
@@ -557,6 +595,7 @@ function runScriptValueCached(scriptVal, time, opts = {}) {
       renderObjects: opts.renderObjects,
       runtime: opts.runtime != null ? opts.runtime : time,
       frametime: opts.frametime,
+      log: opts.log,
     });
     entry = {
       exports: compiled.exports || {},
@@ -630,7 +669,8 @@ function runScriptValueCached(scriptVal, time, opts = {}) {
 }
 
 // 扫描并执行场景所有 {script, value} 对象 (更新到原对象树)
-// opts: { canvasSize, userProps, scriptCache, renderObjects, runtime }
+// opts: { canvasSize, userProps, scriptCache, renderObjects, runtime, log }
+//   log(msg) — 脚本 console.* 的输出出口; 省略即丢弃 (绝不写宿主 stdout)
 export function applySceneScripts(scene, time, opts = {}) {
   const cache = opts.scriptCache && opts.scriptCache.map ? opts.scriptCache : null;
   const shared = (cache ? cache.shared : null) || opts.shared || {};
@@ -654,6 +694,8 @@ export function applySceneScripts(scene, time, opts = {}) {
         runtime: opts.runtime,
         frametime: opts.frametime,
         onError: opts.onError,
+        // 沙箱 console 的出口 (未提供 ⇒ 脚本 console 输出被丢弃, 绝不写宿主 stdout)
+        log: opts.log,
       });
       return; // script 对象内部不再含 script 子对象
     }

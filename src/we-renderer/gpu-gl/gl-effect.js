@@ -469,7 +469,9 @@ export function runEffectOnGL({ fragPre, vertPre = null, u = {}, width, height }
       if (r >= 250 && g >= 250 && b >= 250) white++;
       if (lum > 2) nz++;
     }
-    try { console.log('[gl-effect] OUT ' + width + 'x' + height + ' avg=' + (s / np).toFixed(1) + ' max=' + m + ' white%=' + (100 * white / np).toFixed(1) + ' nz%=' + (100 * nz / np).toFixed(1)); } catch { /* ignore */ }
+    // 诊断输出走 **stderr**：本模块拿不到渲染器的 log 回调，但绝不允许写 stdout
+    //（库调用方的 stdout 属于调用方；CLI 的 --json 就靠它保持只有一行）
+    try { process.stderr.write('[gl-effect] OUT ' + width + 'x' + height + ' avg=' + (s / np).toFixed(1) + ' max=' + m + ' white%=' + (100 * white / np).toFixed(1) + ' nz%=' + (100 * nz / np).toFixed(1) + '\n'); } catch { /* ignore */ }
   }
 
   // 清理: FBO/colorTex 归还复用池 (不 delete — ANGLE 延迟释放导致显存螺旋);

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { normalizeWeAssetsDir } from '../src/scene-renderer.js';
+import { applySceneScripts, createScriptCache } from '../src/scene-scripts.js';
 
 const cases = [];
 const test = (name, fn) => cases.push({ name, fn });
@@ -37,6 +38,40 @@ test('normalizeWeAssetsDir: null / 空 / 不存在的路径原样返回', () => 
   assert.equal(normalizeWeAssetsDir(''), null);
   const bogus = join(process.cwd(), '__no_such_we_dir__');
   assert.equal(normalizeWeAssetsDir(bogus), bogus);
+});
+
+// ── P1-2: 场景脚本的 console 不得污染宿主 stdout ──────────────────────────────
+// 回归背景：沙箱直接把宿主 console 交给 vm，工坊脚本 console.log 会写进程 stdout，
+// CLI `--json` 的首行变成 `Vec3 { x: … }` ⇒ JSON.parse 失败。
+test('scene-scripts: console.log 转投 log 回调且不写宿主 stdout', () => {
+  const scene = {
+    objects: [{ name: 'probe', script: 'export function update(v){ console.log("hello", 1, {x:1,y:2,z:3}); return v; }', value: '7' }],
+  };
+  const seen = [];
+  const realWrite = process.stdout.write;
+  let stray = 0;
+  process.stdout.write = () => { stray++; return true; };
+  try {
+    applySceneScripts(scene, 0, { scriptCache: createScriptCache(), log: (m) => seen.push(String(m)) });
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  assert.equal(stray, 0, '脚本输出写到了宿主 stdout');
+  assert.ok(seen.some((m) => m.includes('hello') ), 'log 回调没有收到脚本 console 输出: ' + JSON.stringify(seen));
+  assert.ok(seen.some((m) => m.includes('1 2 3')), 'Vec3 未按 "x y z" 格式化: ' + JSON.stringify(seen));
+});
+
+test('scene-scripts: 未提供 log 时脚本 console 输出被静默丢弃', () => {
+  const scene = { objects: [{ name: 'probe', script: 'export function update(v){ console.log("quiet"); return v; }', value: '1' }] };
+  const realWrite = process.stdout.write;
+  let stray = 0;
+  process.stdout.write = () => { stray++; return true; };
+  try {
+    applySceneScripts(scene, 0, { scriptCache: createScriptCache() });
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  assert.equal(stray, 0, '未提供 log 时仍写到了宿主 stdout');
 });
 
 // ── runner ─────────────────────────────────────────────────────────────────

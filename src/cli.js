@@ -52,13 +52,28 @@ const out = resolve(opt.out || 'frame.png');
 const weAssets = opt.weAssets || locateWeAssets();
 const log = opt.logOn ? (m) => process.stderr.write('[we-sf] ' + m + '\n') : () => {};
 
+// ── stdout 守卫 ─────────────────────────────────────────────────────────────
+// 渲染期间**任何**写 stdout 的东西都导流到 stderr：渲染器内部已把场景脚本的
+// console.* 接到 log 上（见 scene-scripts.js makeSandboxConsole），这里是第二道闸 ——
+// 保证 `--json` 的 stdout 只有末尾那一行 JSON，不会被第三方影子输出破坏。
+const _realStdoutWrite = process.stdout.write.bind(process.stdout);
+let _diverting = false;
+process.stdout.write = function divertedWrite(chunk, enc, cb) {
+  if (_diverting) return process.stderr.write(chunk, enc, cb);
+  return _realStdoutWrite(chunk, enc, cb);
+};
+async function withStdoutDiverted(fn) {
+  _diverting = true;
+  try { return await fn(); } finally { _diverting = false; }
+}
+
 const t0 = Date.now();
 try {
-  const res = await renderFrame({
+  const res = await withStdoutDiverted(() => renderFrame({
     input: opt.input,
     width: opt.width, height: opt.height, time: opt.time,
     weAssetsDir: weAssets, gpuAccel: opt.gpu, warm: opt.warm, log,
-  });
+  }));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, res.png);
   const info = {

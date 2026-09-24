@@ -949,6 +949,8 @@ export class SceneRenderer {
         renderObjects: this.objects,
         runtime: t,
         frametime: 1 / 60,
+        // 脚本 console.* 的输出出口（未提供即丢弃）——绝不允许脚本直接写宿主 stdout
+        log: this.log,
       });
     } catch { /* 脚本失败不影响渲染 */ }
     if (profileEnabled) profAdd('阶段:脚本', performance.now() - __tscript);
