@@ -318,6 +318,19 @@ class Transpiler {
         return `var ${alias} = ${this.broadcast(h.code, dsz)};`;
       }
     }
+    // 标量声明 + 向量/矩阵初始化 → **窄化取首分量**（HLSL 隐式截断语义，也是 WE 自带
+    // 编译器的行为）。漏了这一步会让变量里装着数组、而类型表里写着 float：
+    // 之后任何「标量 + 该变量」的表达式都会被 binaryExpr 判成标量+标量 ⇒ 发原生 `+`
+    // ⇒ JS 把数组 toString() ⇒ 得到 "NaN0.807…,0" 这种字符串，一路污染到 sin/atan2。
+    // 实测 lens_flare_sun.frag:119 `float pointer = g_PointerPosition.xy * u_pointerSpeed;`
+    // （作者写成了 float，但整条表达式当 vec2 用）—— 就是本仓库 issue #2 的根因。
+    if (SCALARS.has(type)) {
+      const vsz = VEC_SIZE[e.type];
+      if (vsz !== undefined || MAT_SIZE[e.type]) {
+        const h = this.maybeHoist(e, ctx);
+        return `var ${alias} = ${this.compAt(h, 0)};`;
+      }
+    }
     return `var ${alias} = ${e.code};`;
   }
 
