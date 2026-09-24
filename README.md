@@ -74,6 +74,65 @@ test/survey.mjs         ← 普查：本机全库逐个渲染，汇总空白帧 
 
 反向约束不变：**本仓库不反向依赖主插件**，`src/**` 里不允许出现主插件专有模块的 import。
 
+## 下游决策接口（逐效果 / GPU）
+
+渲染器把**决策权**交给调用方：哪些效果应用、用哪条后端、GPU 开不开，都能逐条指定，
+并且每条决策都有**可解释的记录**（谁被跳过、依据是什么）。
+
+```js
+const { png, decisions, gpuStats } = await renderFrame({
+  input: 'scene.pkg', weAssetsDir, time: 2.5,
+  // GPU：'auto'（默认）| 'off'（永不探测）| 'force'（重探，含已熔断的进程）
+  //      也可以是对象：{ mode, failStreakLimit, allowEffects, denyEffects }
+  //      failStreakLimit: 0 = 永不熔断（"宁可慢也要 GPU"）
+  gpu: { mode: 'auto', failStreakLimit: 0, denyEffects: ['godrays'] },
+  effects: {
+    deny: ['filmgrain'],                     // 黑名单：跳过（对象保留）
+    allow: ['waterwaves', 'bloom'],          // 白名单（给定时 = 只允许这些）
+    backend: { waterwaves: 'cpu', godrays: 'gpu-only' },
+    //   'cpu'      → 该效果禁用 GPU，只走 CPU 内核/解释器
+    //   'gpu'      → 优先 GPU（失败仍回退 CPU）
+    //   'gpu-only' → GPU 未产出就**跳过**该效果（不静默回退，便于 CPU/GPU 严格对拍）
+    skipDegenerate: true,                    // 是否启用"输出退化就丢弃"的保护
+    onDecision: (d) => log(d),               // 实时回调，也可从返回值 decisions 里拿
+  },
+  // 自由度最高的一层：钩子优先级高于名单与 backend 表
+  policy: {
+    decideEffect: ({ effect, layer, index }) =>
+      effect === 'bloom' && layer === '天空' ? { action: 'skip', reason: '业务规则' } : 'apply',
+    decideBackend: ({ effect }) => (effect.startsWith('water') ? 'cpu' : 'gpu'),
+  },
+  // 逐着色器源码覆写（借鉴 webwallgl 的 __shaderPatch，但这里是官方接口）
+  shaderPatch: { waterwaves: (src, { stage }) => src.replace('0.05', '0.02') },
+});
+
+console.log(decisions.byAction, decisions.byBackend);
+// decisions.items[] = { effect, layer, index, action, backend, reason, source }
+//   source ∈ hook | hook-error | backend-map | backend-hook | deny | allow | default
+console.log(gpuStats); // { state: 'unknown'|'ok'|'off', failStreak, used, failed, fallback, unavailable }
+```
+
+CLI 对应开关：
+
+```bash
+we-sf render scene.pkg -o out.png --gpu off            # 或 --gpu auto / --gpu force
+we-sf render scene.pkg -o out.png --skip-effect bloom  # 可重复；--no-effect 同义
+we-sf render scene.pkg -o out.png --only-effect waterwaves   # 白名单（可重复）
+we-sf render scene.pkg -o out.png --effect-backend waterwaves:cpu
+we-sf render scene.pkg -o out.png --list-decisions     # 把决策记录打到 stderr
+```
+
+设计约定（与实时渲染路线 `webwallgl` 的对比）：
+
+- webwallgl 对宿主只暴露 `quality.{antiAliasing,particles,postProcessing}` 三个粗档位
+  （`postProcessing:"off"` 是"图层效果链 + 整屏后期 + bloom"三合一总闸），逐效果开关只有
+  场景数据里的 `effect.visible`，着色器编译失败则**静默跳过**。本仓库提供的是**逐效果、
+  可解释、可回放**的决策接口。
+- **任何非法配置都不抛错**：逐键回落到安全默认（渲染是长任务，不该因配置崩）。
+- **未提供策略时零开销**：`policy` 为空时决策点直接短路，行为与不带该功能时逐位一致。
+- 钩子抛错不牵连渲染：按默认放行并记 `source: 'hook-error'`。
+- `shaderPatch` 抛错或返回非字符串 → 保持原样。
+
 ## 已知限制（会静默影响画面，务必先读）
 
 这些都会让"渲染成功"的图与官方不一致。**现在都会上报**：CLI 打到 stderr 且进

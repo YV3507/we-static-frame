@@ -25,7 +25,11 @@ const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'render';
 const rest = cmd === argv[0] ? argv.slice(1) : argv;
 
-const opt = { width: 3840, height: 2160, time: 2.5, weAssets: null, gpu: false, warm: true, out: null, json: false, logOn: false, strict: false, input: null };
+const opt = {
+  width: 3840, height: 2160, time: 2.5, weAssets: null, gpu: false, warm: true, out: null,
+  json: false, logOn: false, strict: false, input: null,
+  gpuMode: null, allowEffects: [], denyEffects: [], effectBackend: {}, listDecisions: false, badArgs: [],
+};
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
   const next = () => rest[++i];
@@ -39,9 +43,27 @@ for (let i = 0; i < rest.length; i++) {
   else if (a === '--json') opt.json = true;
   else if (a === '--log') opt.logOn = true;
   else if (a === '--strict') opt.strict = true;
+  // ── 下游决策（逐效果 / GPU）──────────────────────────────────────────────
+  else if (a === '--gpu') {
+    // `--gpu` 单独出现 = auto；`--gpu off|auto|force` = 指定模式
+    const v = rest[i + 1];
+    if (v && !v.startsWith('-')) { opt.gpuMode = String(next()).toLowerCase(); }
+    else opt.gpuMode = 'auto';
+  }
+  else if (a === '--only-effect') opt.allowEffects.push(String(next()));
+  else if (a === '--skip-effect' || a === '--no-effect') opt.denyEffects.push(String(next()));
+  else if (a === '--effect-backend') {
+    const v = String(next());
+    const at = v.lastIndexOf(':');
+    if (at <= 0) { opt.badArgs.push('--effect-backend 需要 <效果名>:<auto|cpu|gpu|gpu-only>'); }
+    else opt.effectBackend[v.slice(0, at).trim()] = v.slice(at + 1).trim().toLowerCase();
+  }
+  else if (a === '--list-decisions') opt.listDecisions = true;
   else if (a.startsWith('-')) { process.stderr.write('未知参数: ' + a + '\n'); process.exit(2); }
   else opt.input = a;
 }
+
+if (opt.badArgs.length) { for (const m of opt.badArgs) process.stderr.write('参数错误: ' + m + '\n'); process.exit(2); }
 
 if (cmd === 'locate') {
   const p = locateWeAssets();
@@ -78,6 +100,11 @@ try {
     input: opt.input,
     width: opt.width, height: opt.height, time: opt.time,
     weAssetsDir: weAssets, gpuAccel: opt.gpu, warm: opt.warm, log,
+    // 下游决策：GPU 模式 + 逐效果白/黑名单 + 逐效果后端
+    ...(opt.gpuMode ? { gpu: opt.gpuMode } : {}),
+    ...((opt.allowEffects.length || opt.denyEffects.length || Object.keys(opt.effectBackend).length)
+      ? { effects: { allow: opt.allowEffects, deny: opt.denyEffects, backend: opt.effectBackend } }
+      : {}),
   }));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, res.png);
@@ -116,7 +143,17 @@ try {
     sceneSrc: resolveSceneMainFile(opt.input), weAssets: weAssets || null, gpu: opt.gpu,
     blank: !!res.blank, meanLuma: res.meanLuma,
     degraded: degraded.map((d) => ({ object: d.object || null, feature: d.feature, action: d.action })),
+    // 下游决策记录（谁被跳过/强制走哪条后端）+ GPU 计数
+    decisions: res.decisions || { total: 0, items: [] },
+    gpuStats: res.gpuStats || null,
   };
+  if (opt.listDecisions && res.decisions && res.decisions.items.length) {
+    warn('决策记录 ' + res.decisions.total + ' 条：');
+    for (const d of res.decisions.items) {
+      warn('   ' + d.action.padEnd(5) + ' ' + String(d.effect).padEnd(24) + ' backend=' + d.backend
+        + '  [' + d.source + '] ' + (d.reason || ''));
+    }
+  }
   process.stdout.write((opt.json
     ? JSON.stringify(info)
     : `✓ ${out}  ${res.width}x${res.height}  ${(res.png.length / 1024).toFixed(0)} KB  ${res.ms}ms`

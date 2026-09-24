@@ -59,6 +59,12 @@ export function installGlsl(proto) {
     const name = path.basename(path.dirname(ef.file));
     const sh = this._readGlslShader(name, ef);
     if (!sh.frag) return null;
+    // 下游 shaderPatch：按效果名覆写着色器源码（webwallgl 的 __shaderPatch 同款语义，
+    // 但这里是官方接口：命中即改写，抛错/返回非字符串则保持原样）。
+    if (this._applyShaderPatch) {
+      sh.frag = this._applyShaderPatch(name, sh.frag, 'fragment');
+      if (sh.vert) sh.vert = this._applyShaderPatch(name, sh.vert, 'vertex');
+    }
     const pass0 = (ef.passes && ef.passes[0]) || {};
     const texRefs = pass0.textures || [];
     // P2-23: parseMeta 结果挂 shader 文本缓存 (逐帧/多 pass 调用不再重复全文扫描)

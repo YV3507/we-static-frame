@@ -134,6 +134,18 @@ export function installEffects(proto) {
           const file = ef.file || '';
           if (!file) continue;
           const name = path.basename(path.dirname(file)); // effects/waterwaves → waterwaves
+          // ── 下游决策：应用/跳过 + 后端（无策略时 dec=null，零开销、行为不变）──
+          const _dec = this._decideEffect ? this._decideEffect({ effect: name, layer: o.name != null ? String(o.name) : null, index: ei, file, stage: 'effect' }) : null;
+          if (_dec) {
+            this._reportDecision(_dec);
+            if (_dec.action === 'skip') {
+              this.log('策略跳过效果 ' + name + (o.name ? ' @' + o.name : '') + ' (' + _dec.source + ': ' + _dec.reason + ')');
+              continue;
+            }
+          }
+          const _forcedCpu = !!(_dec && _dec.backend === 'cpu');
+          const _gpuOnly = !!(_dec && _dec.backend === 'gpu-only');
+          const _gpuOk = this._gpuAllowsEffect ? this._gpuAllowsEffect(name) : true;
           // P1-2: 实时音频类效果只跳过该效果 (对象保留), 记 onDegraded
           if (LIVE_FX_RE.test(name)) {
             this.log('跳过实时效果 ' + name + ' (无音频输入): ' + (o.name || o.id));
@@ -162,7 +174,7 @@ export function installEffects(proto) {
             // 只串白名单里**实测过**的效果; 任何一步不满足就退回下面的逐效果路径。
             // ★ `_tryEffectGpu` 一行未改 (见 adapter.js 的说明)。
             let gpuImg = null;
-            if (!CHAIN_OFF && this._tryEffectChainGpu && GPU_CHAIN_EFFECTS.has(name)) {
+            if (!CHAIN_OFF && !_forcedCpu && _gpuOk && this._tryEffectChainGpu && GPU_CHAIN_EFFECTS.has(name)) {
               const run = [{ ef, name, c, pass, t }];
               for (let j = ei + 1; j < fxArr.length && run.length < GPU_CHAIN_MAX; j++) {
                 const e2 = fxArr[j];
@@ -181,7 +193,14 @@ export function installEffects(proto) {
                 }
               }
             }
-            if (!gpuImg && this._tryEffectGpu) gpuImg = this._tryEffectGpu(img, ef, name, c, pass, t);
+            if (!gpuImg && !_forcedCpu && _gpuOk && this._tryEffectGpu) gpuImg = this._tryEffectGpu(img, ef, name, c, pass, t);
+            // backend='gpu-only'：调用方明确要求"GPU 做不了就别做"（不静默回退 CPU，
+            // 便于下游用严格模式核对 GPU/CPU 一致性）。默认 'auto' 不受影响。
+            if (_gpuOnly && !gpuImg) {
+              this._reportDecision({ effect: name, layer: o.name != null ? String(o.name) : null, index: ei, action: 'skip', backend: 'gpu-only', reason: 'backend=gpu-only 但 GPU 未产出（不可用/编译失败/熔断）', source: 'backend-map' });
+              this.log('策略跳过效果 ' + name + '（gpu-only 且 GPU 未产出）');
+              continue;
+            }
             if (gpuImg) {
               img = gpuImg;
             } else if (name === 'waterwaves') {

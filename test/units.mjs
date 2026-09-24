@@ -12,6 +12,7 @@ import { normalizeWeAssetsDir } from '../src/scene-renderer.js';
 import { applySceneScripts, createScriptCache } from '../src/scene-scripts.js';
 import { renderFrame, sampleFrame, locateWeAssets, steamRootCandidates } from '../src/render.js';
 import { renameReservedSample, balanceConditionals } from '../src/we-renderer/glsl/preprocess.js';
+import { normalizePolicy, isNoopPolicy, decideEffect, gpuAllowsEffect, normalizeBackend, GPU_MODES } from '../src/policy.js';
 import { compileGlsl } from '../src/we-renderer/glsl/executor.js';
 
 const cases = [];
@@ -203,7 +204,87 @@ test('balanceConditionals: 源码本就配平时逐字节不变', () => {
   assert.equal(balanceConditionals(src, () => {}), src, '配平源码被改动');
 });
 
-// ── runner ─────────────────────────────────────────────────────────────────
+// ── 下游决策层 (policy) ────────────────────────────────────────────────────
+// 目标：逐效果 apply/skip、逐效果后端、GPU 总开关、钩子优先级、非法输入不抛错。
+test('normalizePolicy: 非法输入回落到安全默认（不抛错）', () => {
+  for (const bad of [undefined, null, 0, 'x', [], { gpu: 'nonsense' }, { effects: 'nope' }, { gpu: { mode: {} } }]) {
+    const p = normalizePolicy(bad);
+    assert.ok(p && typeof p === 'object', 'normalizePolicy 未返回对象');
+    assert.ok(GPU_MODES.includes(p.gpu.mode), 'gpu.mode 非法: ' + p.gpu.mode);
+    assert.ok(p.allow instanceof Set && p.deny instanceof Set);
+  }
+  assert.equal(normalizePolicy({ gpu: false }).gpu.mode, 'off');
+  assert.equal(normalizePolicy({ gpu: true }).gpu.mode, 'auto');
+  assert.equal(normalizePolicy({ gpu: 'force' }).gpu.mode, 'force');
+  assert.equal(normalizePolicy({}).gpu.mode, 'auto', '未提供 gpu 时不应擅自关闭');
+  assert.equal(normalizePolicy({ gpu: { failStreakLimit: 0 } }).gpu.failStreakLimit, Infinity, '0 应表示永不熔断');
+  assert.equal(normalizePolicy({ gpu: { failStreakLimit: 'x' } }).gpu.failStreakLimit, 3, '非法阈值未回落');
+});
+
+test('isNoopPolicy: 空策略被识别为 no-op（零开销前提）', () => {
+  assert.equal(isNoopPolicy(normalizePolicy({})), true);
+  assert.equal(isNoopPolicy(normalizePolicy({ gpu: 'off' })), false);
+  assert.equal(isNoopPolicy(normalizePolicy({ effects: { deny: ['a'] } })), false);
+  assert.equal(isNoopPolicy(normalizePolicy({ shaderPatch: { a: () => '' } })), false);
+});
+
+test('decideEffect: 钩子 > backend 表 > deny > allow > 默认', () => {
+  const p = normalizePolicy({
+    effects: { allow: ['a'], deny: ['b'], backend: { a: 'cpu', c: 'gpu-only' } },
+    policy: { decideEffect: ({ effect }) => (effect === 'c' ? { action: 'skip', reason: 'hook' } : null) },
+  });
+  assert.equal(decideEffect(p, { effect: 'c' }).action, 'skip', '钩子未优先');
+  assert.equal(decideEffect(p, { effect: 'c' }).source, 'hook');
+  const a = decideEffect(p, { effect: 'a' });
+  assert.equal(a.action, 'apply');
+  assert.equal(a.backend, 'cpu');
+  assert.equal(a.source, 'backend-map');
+  assert.equal(decideEffect(p, { effect: 'b' }).source, 'deny');
+  assert.equal(decideEffect(p, { effect: 'zzz' }).source, 'allow');
+  assert.equal(decideEffect(normalizePolicy({}), { effect: 'any' }).action, 'apply');
+});
+
+test('decideEffect: 钩子抛错不牵连渲染（按默认放行并留痕）', () => {
+  const p = normalizePolicy({ policy: { decideEffect: () => { throw new Error('boom'); } } });
+  const r = decideEffect(p, { effect: 'x' });
+  assert.equal(r.action, 'apply');
+  assert.equal(r.source, 'hook-error');
+});
+
+test('gpuAllowsEffect: gpu=off 与名单生效', () => {
+  assert.equal(gpuAllowsEffect(normalizePolicy({ gpu: 'off' }), 'a'), false);
+  assert.equal(gpuAllowsEffect(normalizePolicy({ gpu: 'auto' }), 'a'), true);
+  assert.equal(gpuAllowsEffect(normalizePolicy({ gpu: { denyEffects: ['a'] } }), 'a'), false);
+  assert.equal(gpuAllowsEffect(normalizePolicy({ gpu: { allowEffects: ['b'] } }), 'a'), false);
+  assert.equal(gpuAllowsEffect(normalizePolicy({ gpu: { allowEffects: ['b'] } }), 'b'), true);
+});
+
+test('normalizeBackend: off/none 表示"不走这条后端"', () => {
+  assert.equal(normalizeBackend('cpu'), 'cpu');
+  assert.equal(normalizeBackend('gpu-only'), 'gpu-only');
+  assert.equal(normalizeBackend('off'), null);
+  assert.equal(normalizeBackend('skip'), null);
+  assert.equal(normalizeBackend('nonsense'), 'auto');
+});
+
+test('renderFrame: 策略进入真实渲染路径（跳过/后端/决策记录/GPU 开关）', async () => {
+  const scene = findOneScene();
+  if (!scene) return 'SKIP';
+  const base = { input: scene, width: 160, height: 90, time: 2.5, weAssetsDir: locateWeAssets(), warm: false, log: () => {} };
+  const a = await renderFrame(base);
+  assert.ok(a.decisions && Array.isArray(a.decisions.items), '返回缺少 decisions');
+  assert.ok(a.gpuStats && typeof a.gpuStats.state === 'string', '返回缺少 gpuStats');
+  // 白名单：只允许一个不存在的效果 ⇒ 该场景所有效果都被跳过，且记录 source=allow
+  const b = await renderFrame({ ...base, effects: { allow: ['__no_such_effect__'] } });
+  assert.ok(b.decisions.total > 0, '白名单下没有决策记录');
+  assert.ok(b.decisions.items.every((d) => d.action === 'skip'), '白名单未生效');
+  assert.ok(b.decisions.items.every((d) => d.source === 'allow'));
+  // gpu='off' 时不得探测（state 保持 unknown）
+  const c = await renderFrame({ ...base, gpu: 'off' });
+  assert.equal(c.gpuStats.state, 'unknown', 'gpu=off 仍探测了 GPU');
+});
+
+
 let pass = 0, skip = 0, fail = 0;
 for (const { name, fn } of cases) {
   try {

@@ -37,6 +37,8 @@ import { installGpuAdapter } from './gpu-gl/adapter.js';
 import { scratchGet, scratchRecallAll, SCRATCH_U8 } from './effects/_scratch.js';
 // 可选分阶段耗时剖析 (DSH_WE_PROFILE=1; 默认关闭时 profTime 直接透传, 零开销)
 import { profAdd, profTime, profileEnabled } from './profile.js';
+// 下游决策层 (本仓库新写的适配层): 逐效果 应用/跳过 + 后端选择 + GPU 开关 + 着色器源码覆写
+import { normalizePolicy, isNoopPolicy, decideEffect, gpuAllowsEffect, normalizeBackend } from '../policy.js';
 
 /**
  * weAssetsDir 语义统一 —— 两种入参都接受，一律归一到「WE 安装根」。
@@ -99,6 +101,13 @@ export class SceneRenderer {
     // GPU 渲染加速 (sf40h): 仅当配置开启 (sceneGpuAccel, 附属 beta场景动画) 时
     // 内置/GLSL 效果走 WebGL (x64 + supreium-headless-gl), 失败自动回退 CPU
     this.gpuAccel = opts.gpuAccel === true;
+    // ── 下游决策层 ──────────────────────────────────────────────────────────
+    // policy: 逐效果 apply/skip、逐效果后端 (auto/cpu/gpu/gpu-only)、GPU 总开关、
+    // decideEffect/decideBackend 钩子、shaderPatch 逐着色器源码覆写。
+    // 未提供任何策略时 isNoopPolicy()=true ⇒ 各决策点零开销 (与旧行为逐位一致)。
+    this.policy = normalizePolicy(opts);
+    this._policyNoop = isNoopPolicy(this.policy);
+    this._decisions = [];
     // 静态帧渲染 (scene-frame) 不降采样效果 — 4K 壁纸效果全分辨率保证细腻。
     // 多帧动画 (beta 场景动画 / scene-anim) 已随实时渲染路线移除, 故恒为单帧语义。
     this.staticFrame = true;
@@ -318,6 +327,57 @@ export class SceneRenderer {
     // 登记: 直接交出 `rc.data` —— 该缓冲由本实例独占, pass 之后不再写入, 无需像
     // 旧 `_rt_` 快照那样借 scratch 池复制一份整帧 (4K 下省 33MB/帧的拷贝与常驻)。
     this._rtTex.set('_rt_Reflection', { width: this.W, height: this.H, rgba: rc.data });
+  }
+
+  // ── 下游决策层 (policy) ────────────────────────────────────────────────────
+  /** 单个效果的决策（无策略时返回 null，调用方直接走原路径，零开销）。 */
+  _decideEffect(ctx) {
+    if (this._policyNoop) return null;
+    return decideEffect(this.policy, ctx);
+  }
+
+  /** 记录一条决策（同时转给调用方的 onDecision 回调）。 */
+  _reportDecision(rec) {
+    if (!rec) return;
+    this._decisions.push(rec);
+    const cb = this.policy && this.policy.onDecision;
+    if (cb) { try { cb(rec); } catch { /* 回调失败不影响渲染 */ } }
+  }
+
+  /** GPU 是否可用于该效果（受 gpu.mode 与 GPU 名单控制）。 */
+  _gpuAllowsEffect(name) {
+    if (this._policyNoop) return true;
+    return gpuAllowsEffect(this.policy, name);
+  }
+
+  /**
+   * 逐着色器源码覆写钩子（借鉴 webwallgl 的 `__shaderPatch`）：
+   * key 命中「着色器 stem」或「effects/<name>」时把源码交给调用方改写。
+   * 返回 null/undefined/非字符串 ⇒ 保持原样；抛错 ⇒ 保持原样（不牵连渲染）。
+   */
+  _applyShaderPatch(key, src, stage) {
+    if (!src || this._policyNoop) return src;
+    const patch = this.policy.shaderPatch;
+    const fn = patch[key] || patch[(key || '').replace(/^effects\//, '')];
+    if (typeof fn !== 'function') return src;
+    try {
+      const out = fn(src, { stage, key, renderer: this });
+      return typeof out === 'string' && out ? out : src;
+    } catch (e) {
+      this.log('shaderPatch ' + key + ' 抛错，保持原样: ' + (e && e.message ? e.message : e));
+      return src;
+    }
+  }
+
+  /** 决策快照（供 renderFrame 返回值 / CLI --json）。 */
+  decisionReport() {
+    const byAction = {};
+    const byBackend = {};
+    for (const d of this._decisions) {
+      byAction[d.action] = (byAction[d.action] || 0) + 1;
+      byBackend[d.backend] = (byBackend[d.backend] || 0) + 1;
+    }
+    return { total: this._decisions.length, byAction, byBackend, items: this._decisions.slice() };
   }
 
   // CPU degraded 通道发射: {object, feature, action} 结构 (宿主可写 gpu-diag.log)。

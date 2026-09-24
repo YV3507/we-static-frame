@@ -14,12 +14,31 @@
  *                    不提供也能渲染，但官方效果链会退化（见 README「已知限制」）。
  *   · videoFrames    可选：场景内嵌视频纹理的预抽帧 { [纹理路径]: Uint8Array }，由调用方负责
  *                    抽帧（主插件用 ffmpeg；独立使用时可以不传 ⇒ 跳过视频纹理）
- *   · gpuAccel       可选：效果链走 WebGL（需要 supreium-headless-gl + x64）
+ *   · gpuAccel       可选：效果链走 WebGL（需要 supreium-headless-gl + x64）。
+ *                    等价于 gpu:'auto'；更细的控制见下。
+ *   · gpu            可选：'auto'（默认）| 'off' | 'force' | { mode, failStreakLimit,
+ *                    allowEffects, denyEffects }。'force' 会重新探测（含此前已熔断的进程）。
+ *   · effects        可选：逐效果决策 ——
+ *                    { allow: [], deny: [], backend: { <效果名>: 'auto'|'cpu'|'gpu'|'gpu-only' },
+ *                      skipDegenerate: bool, onDecision(d) }
+ *                    · deny 命中 / 不在 allow（allow 非空时）→ 跳过该效果（对象保留）
+ *                    · backend 'cpu'  → 该效果禁用 GPU，只走 CPU 内核/解释器
+ *                    · backend 'gpu-only' → GPU 未产出就跳过（不静默回退 CPU，便于严格对拍）
+ *   · policy         可选：{ decideEffect(ctx), decideBackend(ctx), gpu, shaderPatch, onDecision }
+ *                    decideEffect 优先级最高，可返回 'apply'|'skip'|'cpu'|'gpu'|{action,backend,reason}
+ *   · onDecision     可选：实时接收每条决策 {effect, layer, index, action, backend, reason, source}
+ *   · shaderPatch    可选：{ <效果名|材质 stem>: (src, {stage}) => newSrc } 逐着色器源码覆写
+ *                    （借鉴 webwallgl 的 __shaderPatch，但这是官方接口；抛错/非字符串则保持原样）
+ *
+ * 返回的 `decisions` 是**结构化决策记录**（谁被跳过、为什么、用了哪条后端），
+ * `gpuStats` 是 GPU 适配层计数（used/failed/fallback/unavailable/state）。
+ * 未提供任何策略时，整条决策链零开销、行为与旧版逐位一致。
  */
 import { statSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { SceneRenderer, encodePng } from './scene-renderer.js';
+import { gpuAdapterStats } from './we-renderer/gpu-gl/adapter.js';
 
 /** 目录入参 → 真实场景主文件（project.json 的 `file` 字段，回退目录本身）。 */
 export function resolveSceneMainFile(src) {
@@ -55,6 +74,7 @@ export async function renderFrame(opts = {}) {
     input, width = 3840, height = 2160, time = 2.5,
     weAssetsDir = null, videoFrames = null, gpuAccel = false,
     warm = true, log = () => {}, onDegraded = null,
+    gpu, effects = null, policy = null, onDecision = null, shaderPatch = null,
   } = opts;
   if (!input) throw new Error('renderFrame: input 必填（scene.pkg 路径或场景目录）');
 
@@ -68,10 +88,14 @@ export async function renderFrame(opts = {}) {
       try { onDegraded(d); } catch { /* 调用方回调失败不影响渲染 */ }
     }
   };
+  // gpuAccel 是历史开关（等价 gpu:'auto'）；显式给了 gpu/effects/policy 时以策略层为准。
+  const policyOpts = { gpu: gpu !== undefined ? gpu : (gpuAccel === true ? 'auto' : 'off'), effects, policy, onDecision, shaderPatch };
   const renderer = new SceneRenderer(sceneSrc, {
     width, height, time, weAssetsDir, videoFrames,
-    gpuAccel: gpuAccel === true,
+    gpuAccel: gpuAccel === true || gpu === 'auto' || gpu === 'force'
+      || (gpu && typeof gpu === 'object' && gpu.mode !== 'off' && gpu.enabled !== false),
     log, onDegraded: collectDegraded,
+    ...policyOpts,
   });
 
   // 块行并行预解码（与主插件 worker 同序：构造 → 预热 → render）。
@@ -97,6 +121,9 @@ export async function renderFrame(opts = {}) {
     degraded,
     blank: frame.blank,
     meanLuma: frame.meanLuma,
+    // 下游决策记录 + GPU 计数（无策略时 decisions.total = 0）
+    decisions: renderer.decisionReport ? renderer.decisionReport() : { total: 0, items: [] },
+    gpuStats: gpuAdapterStats(),
   };
 }
 

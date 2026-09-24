@@ -340,8 +340,8 @@ export function collectAttributes(vertSrc) {
 }
 
 // ── 编译 (带缓存) ─────────────────────────────────────────────────────────
-function compileCached({ pkg, weAssetsDir, shaderName, combos, rinc, src }) {
-  const key = shaderName + '\x00' + JSON.stringify(combos) + '\x00' + (src.fragAt || '') + '\x00' + (src.vertAt || '');
+function compileCached({ pkg, weAssetsDir, shaderName, combos, rinc, src, extraKey }) {
+  const key = shaderName + '\x00' + JSON.stringify(combos) + '\x00' + (src.fragAt || '') + '\x00' + (src.vertAt || '') + (extraKey || '');
   if (_compileCache.has(key)) {
     const hit = _compileCache.get(key);
     _compileCache.delete(key); _compileCache.set(key, hit);
@@ -405,6 +405,19 @@ export function bindMaterialProgram(renderer, {
   const incLog = trace ? [] : null;
   const src = readWallpaperShader(renderer.pkg, shaderName, renderer.weAssetsDir);
   if (!src.frag) return { ok: false, reason: 'GLSL 材质 shader 源码不在容器内: shaders/' + shaderName + '.frag' };
+  // 下游 shaderPatch：材质着色器同样允许覆写（key = 材质 shader stem）。
+  // 注意 compileCached 的缓存键含源码路径而不含源码内容 ⇒ 打补丁时把补丁后的文本
+  // 计入键（见下方 patchedKey），避免不同补丁之间互相命中缓存。
+  let patchedKey = '';
+  if (renderer._applyShaderPatch) {
+    const pf = renderer._applyShaderPatch(shaderName, src.frag, 'fragment');
+    const pv = src.vert ? renderer._applyShaderPatch(shaderName, src.vert, 'vertex') : null;
+    if (pf !== src.frag || (pv && pv !== src.vert)) {
+      patchedKey = '\x00P' + pf.length + ':' + (pv ? pv.length : 0);
+      src.frag = pf;
+      if (pv) src.vert = pv;
+    }
+  }
   const rinc = makeIncludeResolver(renderer.pkg, renderer.weAssetsDir, incLog);
   let meta = { combos: {}, uniforms: {} };
   try {
@@ -414,7 +427,7 @@ export function bindMaterialProgram(renderer, {
     meta = { combos: { ...mv.combos, ...mf.combos }, uniforms: { ...mv.uniforms, ...mf.uniforms } };
   } catch { /* compile 阶段报具体原因 */ }
   const combos = combosForPass(pass, meta, textures);
-  const rec = compileCached({ pkg: renderer.pkg, weAssetsDir: renderer.weAssetsDir, shaderName, combos, rinc, src });
+  const rec = compileCached({ pkg: renderer.pkg, weAssetsDir: renderer.weAssetsDir, shaderName, combos, rinc, src, extraKey: patchedKey });
   if (!rec.ok) return { ok: false, reason: rec.reason };
   const compiled = rec.compiled;
   if (!compiled.vertFn) return { ok: false, reason: 'GLSL 材质 shader 缺少顶点程序 (shaders/' + shaderName + '.vert)' };

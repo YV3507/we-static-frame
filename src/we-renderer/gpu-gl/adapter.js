@@ -52,9 +52,17 @@ export function installGpuAdapter(proto) {
   /**
    * 返回后端标识 ('webgl') 或 null。首次调用做真实探测 (getWebGL(true)),
    * 不可用则熔断为 off —— 后续调用零成本直接返回 null。
+   *
+   * 下游策略（this.policy.gpu.mode）：
+   *   · 'off'   → 永不探测、永不使用 GPU（零开销，连 require 都不做）
+   *   · 'auto'  → 默认：探测一次，不可用就回退 CPU
+   *   · 'force' → 即便本进程此前已熔断也重新探测（便于下游"宁可慢也要 GPU"或多场景复用）
    */
   proto._getGpuBackend = function () {
     if (this.gpuAccel !== true) return null;
+    const mode = (this.policy && this.policy.gpu && this.policy.gpu.mode) || 'auto';
+    if (mode === 'off') return null;
+    if (mode === 'force') _gpuState = 'unknown';       // 强制重探（含此前熔断的进程）
     if (_gpuState === 'off') return null;
     if (_gpuState === 'unknown') {
       let ok = false;
@@ -65,12 +73,20 @@ export function installGpuAdapter(proto) {
     return _gpuState === 'ok' ? 'webgl' : null;
   };
 
+  /** 熔断阈值可由下游配置（policy.gpu.failStreakLimit；0 = 永不熔断）。 */
+  proto._gpuFailStreakLimit = function () {
+    const n = this.policy && this.policy.gpu && this.policy.gpu.failStreakLimit;
+    if (n === Infinity) return Infinity;
+    return Number.isFinite(n) && n > 0 ? n : GPU_FAIL_STREAK_LIMIT;
+  };
+
   /** 记一次 GPU 失败; 达阈值即熔断。 */
   proto._noteGpuFailure = function (e) {
     stats.failed++;
     _gpuFailStreak++;
-    this.log('GPU 效果失败 (' + _gpuFailStreak + '/' + GPU_FAIL_STREAK_LIMIT + '): ' + (e && e.message ? e.message : e));
-    if (_gpuFailStreak >= GPU_FAIL_STREAK_LIMIT) {
+    const limit = this._gpuFailStreakLimit();
+    this.log('GPU 效果失败 (' + _gpuFailStreak + '/' + limit + '): ' + (e && e.message ? e.message : e));
+    if (_gpuFailStreak >= limit) {
       _gpuState = 'off';
       this.log('GPU 连续失败达阈值 → 熔断, 本次进程内效果链全部回退 CPU');
     }
