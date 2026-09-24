@@ -202,6 +202,22 @@ export function installGlsl(proto) {
       }
       return out;
     } catch (e) {
+      // 诊断开关 DSH_WE_FX_TRACE=1: 把**生成的 JS** 出错那一行打出来。
+      // 效果运行期异常报的是 `TypeError: Cannot read properties of undefined (reading '0')`
+      // 这类无位置信息的话; 对照生成代码才能定位到具体表达式 (实测靠它抓出
+      // "局部变量被当成 varying" 与 "00.25 字面量" 两类问题)。
+      // 注意 <anonymous>:L 与 fragCode 行号差 2 (new Function 的函数头占 2 行)。
+      if (process.env.DSH_WE_FX_TRACE === '1') {
+        try {
+          const m = /<anonymous>:(\d+):(\d+)/.exec(e.stack || '');
+          this.log('FX-TRACE ' + name + ' stack=' + (e.stack || '').split('\n').slice(0, 3).join(' | '));
+          if (m) {
+            const lines = String(compiled.fragCode || '').split('\n');
+            const ln = Number(m[1]) - 2;
+            this.log('FX-TRACE ' + name + ' genLine(' + ln + ')= ' + String(lines[ln - 1] || '').slice(0, 300));
+          }
+        } catch { /* 诊断失败不影响渲染 */ }
+      }
       this.log('GLSL 效果 ' + name + ' 渲染失败: ' + e.message); // P1-42: name 由参数传入 (此前未声明 → ReferenceError)
       return img;
     }

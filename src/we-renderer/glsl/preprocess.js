@@ -107,14 +107,24 @@ export function expandIncludes(source, resolveInclude, opts = {}) {
 // genericparticle/chroma4/foliage4/fur4。
 const REQUIRE_RE = /^[ \t]*#require\b[^\n]*$/gm;
 
-// shaderfrog 词法器把 `sample` 当保留字 (HLSL sampler state) ⇒ 任何名为 `sample` 的
-// 局部变量都会让整个 shader 解析失败, 且报错位置回溯到外层语句 (实测
-// dino_run/shaders/effects/godrays_cast.frag: `vec4 sample = ...` 报在 for 行)。
-// 改名是纯文本等价: 只替换独立标识符 `sample` (词边界), 不碰 texSample2D /
-// sampleCount / sampler2D。**默认不启用** —— 启用会改变 dino_run 的 godrays 图层像素
-// (此前静默跳过 ⇒ 现在会真的渲染), 超出本次验收窗口; 材质解释器路径已启用。
+// shaderfrog 的词法器把一些 GLSL ES 1.0 里**合法**的标识符当成保留字，任何以此命名的
+// 变量都会让整个 shader 解析失败，且报错位置回溯到外层语句（实测
+// `vec4 sample = …` 报在 for 行、`vec4 result = CAST4(0.0), sample;` 报在列 28）。
+// 逐个实测（node -e "parse('void main(){ float X; }')"，见 test/units.mjs 的同类断言）：
+//   sample / buffer / shared / patch / precise / subroutine  → 解析失败
+//   image / input / output / filter / active / cast / namespace / using → 均正常
+// 改名是纯文本等价：只替换独立标识符（词边界），不碰 texSample2D / sampleCount /
+// sampler2D；同一份源码内一致替换，语义不变。
+//
+// 覆盖到的真实语料：pulse_.frag `vec4 sample = texSample2D(…)`、
+// down_sample.frag / light_map.frag `vec4 sample;`、bokeh 的 downsample.frag
+// `vec4 result = CAST4(0.0), sample;`。此前只在材质路径启用，效果路径没启用 ⇒
+// 这些效果被整条丢弃（pulse_ / bloom / bokeh_blur 等）。
+const PARSER_RESERVED = ['sample', 'buffer', 'shared', 'patch', 'precise', 'subroutine'];
 export function renameReservedSample(src) {
-  return src.replace(/\bsample\b/g, 'sample__');
+  let out = src;
+  for (const w of PARSER_RESERVED) out = out.replace(new RegExp('\\b' + w + '\\b', 'g'), w + '__');
+  return out;
 }
 
 // 完整预处理: include 展开 → combo defines 注入 → shaderfrog preprocess

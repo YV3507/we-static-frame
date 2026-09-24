@@ -25,7 +25,7 @@ import { locateWeAssets } from '../src/render.js';
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
-const opt = { w: 480, h: 270, t: 2.5, gpu: false, out: null, strict: false, json: false };
+const opt = { w: 480, h: 270, t: 2.5, gpu: false, out: null, strict: false, json: false, only: null };
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   const next = () => argv[++i];
@@ -33,11 +33,12 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--h' || a === '--height') opt.h = Number(next());
   else if (a === '--t' || a === '--time') opt.t = Number(next());
   else if (a === '--out') opt.out = next();
+  else if (a === '--only') opt.only = String(next()).split(',').map((s) => s.trim()).filter(Boolean);
   else if (a === '--gpu') opt.gpu = true;
   else if (a === '--strict') opt.strict = true;
   else if (a === '--json') opt.json = true;
   else if (a === '-h' || a === '--help') {
-    process.stdout.write('用法: node test/survey.mjs [--w N] [--h N] [--t S] [--gpu] [--out report.json] [--strict] [--json]\n');
+    process.stdout.write('用法: node test/survey.mjs [--w N] [--h N] [--t S] [--gpu] [--only id1,id2] [--out report.json] [--strict] [--json]\n');
     process.exit(0);
   } else { process.stderr.write('未知参数: ' + a + '\n'); process.exit(2); }
 }
@@ -89,7 +90,8 @@ function frameStats(rgba, w, h) {
   };
 }
 
-const scenes = findScenes();
+let scenes = findScenes();
+if (opt.only) scenes = scenes.filter((p) => opt.only.includes(p.split(/[\\/]/).slice(-2)[0]));
 if (!scenes.length) {
   console.log('SKIP: 未找到本地 WE 场景（设 WE_SF_SCENE=<scene.pkg> 或 WE_SF_WORKSHOP_ROOT=<.../431960> 后重跑）');
   process.exit(0);

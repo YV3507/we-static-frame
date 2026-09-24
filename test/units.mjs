@@ -11,6 +11,8 @@ import { join, dirname } from 'node:path';
 import { normalizeWeAssetsDir } from '../src/scene-renderer.js';
 import { applySceneScripts, createScriptCache } from '../src/scene-scripts.js';
 import { renderFrame, sampleFrame, locateWeAssets } from '../src/render.js';
+import { renameReservedSample } from '../src/we-renderer/glsl/preprocess.js';
+import { compileGlsl } from '../src/we-renderer/glsl/executor.js';
 
 const cases = [];
 const test = (name, fn) => cases.push({ name, fn });
@@ -138,6 +140,29 @@ test('renderFrame: 内嵌视频纹理场景 → blank 且 degraded 含可执行�
   });
   assert.equal(res.blank, true, '视频纹理场景未被判定为空白帧');
   assert.ok(res.degraded.some((d) => /视频纹理/.test(d.action)), 'degraded 里没有视频纹理条目');
+});
+
+// ── P1-3: GLSL 解析/转译失败 ────────────────────────────────────────────────
+// 回归背景 1：shaderfrog 把 sample/buffer/shared/patch/precise/subroutine 当保留字
+//（GLSL ES 1.0 里合法）⇒ 以它们命名的变量让整个效果被丢弃。
+// 回归背景 2：工坊 shader 里有 `00.25`（多余前导零）、`3.14f`（HLSL 后缀）这类
+// 非规范字面量，原样进 JS 会 `SyntaxError: Unexpected number`。
+test('renameReservedSample: 只改独立保留字标识符，不伤 texSample2D/sampler2D', () => {
+  const src = 'vec4 sample; float buffer; float shared; float patch; float precise; float subroutine;\n'
+    + 'vec4 c = texSample2D(sampler2D_x, uv); float sampleCount = 1.0;';
+  const out = renameReservedSample(src);
+  for (const w of ['sample', 'buffer', 'shared', 'patch', 'precise', 'subroutine']) {
+    assert.ok(out.includes(w + '__'), '未改名: ' + w);
+  }
+  assert.ok(out.includes('texSample2D('), 'texSample2D 被误伤');
+  assert.ok(out.includes('sampler2D_x'), 'sampler2D 被误伤');
+  assert.ok(out.includes('sampleCount'), 'sampleCount 被误伤');
+});
+
+test('compileGlsl: 保留字变量 + 00.25/3.14f 字面量可编译（效果不再整条丢弃）', () => {
+  const glsl = 'void main(){ vec4 sample; sample = vec4(00.25); float x = 3.14f; gl_FragColor = sample + x; }';
+  const r = compileGlsl({ fragSource: glsl });
+  assert.equal(typeof r.fragFn, 'function', 'compileGlsl 未返回可执行 fragFn');
 });
 
 // ── runner ─────────────────────────────────────────────────────────────────

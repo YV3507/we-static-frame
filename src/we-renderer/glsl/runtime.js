@@ -139,6 +139,13 @@ export const exp = (x) => (typeof x === 'number' ? Math.exp(x) : x.map((v) => Ma
 export const log = (x) => (typeof x === 'number' ? Math.log(x) : x.map((v) => Math.log(v)));
 export const sqrt = (x) => (typeof x === 'number' ? Math.sqrt(x) : x.map((v) => Math.sqrt(v)));
 export const inversesqrt = (x) => (typeof x === 'number' ? 1 / Math.sqrt(x) : x.map((v) => 1 / Math.sqrt(v)));
+// ── HLSL 拼写别名 (工坊 shader 直接调用, 与 GLSL 内建同名不同拼法) ──
+// 实测 lens_flare_sun.frag 调用 `atan2(...)` ⇒ 缺它整条效果报 "atan2 is not defined" 被丢弃。
+// atan2(y, x) 与 GLSL `atan(y, x)` 语义完全一致 (1 参形式 HLSL 不提供), 直接别名。
+export const atan2 = (y, x) => (typeof y === 'number' ? Math.atan2(y, x) : y.map((v, i) => Math.atan2(v, x[i])));
+export const rsqrt = inversesqrt;                       // HLSL rsqrt = GLSL inversesqrt
+export const log2 = (x) => (typeof x === 'number' ? Math.log2(x) : x.map((v) => Math.log2(v)));
+export const exp2 = (x) => (typeof x === 'number' ? 2 ** x : x.map((v) => 2 ** v));
 export const sign = (x) => (typeof x === 'number' ? Math.sign(x) : x.map((v) => Math.sign(v)));
 export const sin = (x) => (typeof x === 'number' ? Math.sin(x) : x.map((v) => Math.sin(v)));
 export const cos = (x) => (typeof x === 'number' ? Math.cos(x) : x.map((v) => Math.cos(v)));
@@ -385,6 +392,8 @@ export function runtimeObject(texSample) {
     _veq, _imod, _matColSet, _discard, DISCARD, _vInto, _vAssign,
     mix, step, smoothstep, clamp, min, max, abs, floor, ceil, fract, frac, lerp, mod, fmod,
     pow, exp, log, sqrt, inversesqrt, sign, sin, cos, tan, asin, acos, atan,
+    // HLSL 拼写别名 (见文件内定义处注释)
+    atan2, rsqrt, log2, exp2,
     radians, degrees, dot, cross: (a, b) => new Float32Array([
       a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0],
     ]),

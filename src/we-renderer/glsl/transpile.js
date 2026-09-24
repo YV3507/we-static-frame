@@ -21,6 +21,9 @@ const BUILTIN = new Set([
   //   `frac` 13 处 / `texSample2DLod` 2 处; `lerp` 0 处但同族)。此前未收录 ⇒ 转译器
   //   原样输出裸调用 `frac(...)` ⇒ ReferenceError ⇒ 整条通路失败。
   'frac', 'lerp', 'texSample2DLod',
+  // 同族但**拼写不同**的 HLSL 别名: 缺失 ⇒ 生成裸调用 → ReferenceError → 整个效果被丢弃
+  // (实测 lens_flare_sun 用 atan2; rsqrt/log2/exp2 同族一并补齐, runtime 侧有对应实现)
+  'atan2', 'rsqrt', 'log2', 'exp2',
   'floatBitsToInt', 'intBitsToFloat',
   // P1-28/GLS-10: 补齐 runtime 已实现的内置 (此前缺收录 → 裸调用 ReferenceError)
   'reflect', 'refract', 'faceforward', 'matrixCompMult',
@@ -29,6 +32,25 @@ const BUILTIN = new Set([
 ]);
 const CONSTS = new Set(['M_PI', 'M_PI_HALF', 'M_PI_2', 'SQRT_2', 'SQRT_3']);
 const SWZ = { x: 0, y: 1, z: 2, w: 3, r: 0, g: 1, b: 2, a: 3, s: 0, t: 1, p: 2, q: 3 };
+
+/**
+ * 数字字面量 → 合法 JS 字面量（只做等价规范化，不改数值）。
+ *
+ * 为什么必须有：工坊 shader 里真实存在非规范写法，而 WE 自带的编译器照收，
+ * 原样透传会让**生成的 JS 直接语法错误**，整个效果被丢弃（不是像素差异，是整条失效）：
+ *   · `00.25`（多余前导零）—— 实测 lens_flare_sun.frag:67 `max(…,.0)*00.25`
+ *     → 生成 `… * 00.25` → `SyntaxError: Unexpected number`；
+ *   · `3.14f`（HLSL 后缀 f/F/h）—— 见同场景 `#define M_PI_F 3.14159265358979323846f`。
+ * `.5` / `16.` / `0x1F` 本身就是合法 JS，保持原样；十六进制不做前导零处理。
+ */
+function jsNumber(tok) {
+  let s = String(tok == null ? '' : tok).trim();
+  if (!s) return '0';
+  if (/[fFhH]$/.test(s) && /^[0-9.]/.test(s)) s = s.slice(0, -1); // HLSL 浮点后缀
+  if (/^0[xX]/.test(s)) return s;                                 // 十六进制原样
+  if (/^\d/.test(s)) s = s.replace(/^0+(?=\d)/, '');              // 00.25 → 0.25, 007 → 7
+  return s;
+}
 
 export function transpile(ast, stage) {
   return new Transpiler(ast, stage).generate();
@@ -147,6 +169,23 @@ class Transpiler {
     }
     return nm;
   }
+  /**
+   * 该名字是否被**局部声明遮蔽**（局部变量遮蔽同名全局 varying/uniform）。
+   *
+   * 不能用"作用域里有没有这个名字"来判断：函数作用域的种子 (见 generate 的 seed)
+   * 预置了**全部全局名**，用来给同名局部声明自动改名，所以对全局名它恒为真。
+   * 只有 registerDeclaration() 真的因为外层同名而改名 (nm$N) 时才算发生了遮蔽，
+   * 由 ctx.shadowed 记录。
+   *
+   * 背景（实测 lens_flare_sun.frag）：该 shader 全局声明了
+   *   `varying vec4 timer; varying float timer2; varying vec2 rotation; …`
+   * 而 main() 内又声明了同名局部。GLSL 语义是**局部遮蔽全局**，但转译器先查 varying
+   * ⇒ 生成 `__v.rotation`（该 varying 顶点侧并未提供 → undefined）→ 读 [0] 抛
+   * TypeError ⇒ 整个效果被丢弃。
+   */
+  isLocalShadow(nm, ctx) {
+    return !!(ctx && ctx.shadowed && ctx.shadowed.has(nm));
+  }
   registerDeclaration(nm, ctx) {
     if (!ctx.scopes || !ctx.scopes.length) return nm;
     const cur = ctx.scopes[ctx.scopes.length - 1];
@@ -155,6 +194,7 @@ class Transpiler {
         // 外层已有同名 → 本块重命名 (GLSL 块级 shadow, 不再污染外层)
         const alias = nm + '$' + this.tmp++;
         cur.set(nm, alias);
+        if (ctx.shadowed) ctx.shadowed.add(nm); // 记录"发生了遮蔽"(供 varying 解析避让)
         return alias;
       }
     }
@@ -312,7 +352,7 @@ class Transpiler {
         return (VEC_SIZE[t] || MAT_SIZE[t]) && (p.qualifier || []).some((q) => q.token === 'inout' || q.token === 'out');
       })
       .map((p) => p.identifier.identifier));
-    const ctx = { locals, fnName: name, boxed, inoutRefs };
+    const ctx = { locals, fnName: name, boxed, inoutRefs, shadowed: new Set() };
     // 作用域种子: 全局名 + 形参名 (函数级) → 函数体/嵌套块同名声明自动重命名
     const seed = new Map();
     for (const g of Object.keys(this.globals)) seed.set(g, g);
@@ -521,15 +561,20 @@ class Transpiler {
       const rhs = this.expr(node.right, ctx);
       return `gl_FragColor.set(${rhs.code});`;
     }
-    // ★ varying 整变量赋值 (vertex 阶段, 形如 `v_TexCoord = a_TexCoord.xyxy;`) 必须
-    // **原地写入**预分配的 varying 数组: executor 的角点循环先分配 __v[name] 并把该
-    // 数组交给插值读取, `__v.name = rhs` 会把它**重绑**到新数组 → 插值端仍读到全 0
-    // (实测 texture_override/geometric_transform 的 v_TexCoord 恒 0 ⇒ 覆盖贴图按 (0,0)
-    //  采样 ⇒ 整幅透明 ⇒ 组件白块; geometric_transform 甚至报 v_TexCoord 未定义)。
-    if (op === '=' && this.stage === 'vertex' && left.type === 'identifier'
+    // ★ varying 整变量赋值必须**原地写入**预分配/插值的数组, 不能重绑:
+    //   · 顶点阶段 executor 先分配 __v[name] 并把该数组交给插值读取, `__v.name = rhs`
+    //     会重绑到新数组 → 插值端仍读到全 0 (实测 texture_override/geometric_transform
+    //     的 v_TexCoord 恒 0 ⇒ 覆盖贴图按 (0,0) 采样 ⇒ 整幅透明)。
+    //   · 片元阶段同理: 逐像素插值写的是 __v[name] 指向的缓冲, 重绑后本像素读到上一像素的值;
+    //     标量 varying 在片元阶段是 number, 直接赋值即可。
+    //   · 局部同名遮蔽 (this.isLocalShadow) 时这不是 varying, 走普通赋值。
+    if (op === '=' && left.type === 'identifier' && !this.isLocalShadow(left.identifier, ctx)
         && this.kindOfName(left.identifier) === 'varying') {
       const rhs = this.expr(node.right, ctx);
-      return `__v.${left.identifier}.set(${rhs.code});`;
+      if (this.stage === 'vertex') return `__v.${left.identifier}.set(${rhs.code});`;
+      const vt = this.typeOfName(left.identifier, ctx.locals);
+      if (VEC_SIZE[vt] || MAT_SIZE[vt]) return `__v.${left.identifier}.set(${rhs.code});`;
+      return `__v.${left.identifier} = ${rhs.code};`;
     }
     if (op === '=') {
       const rhs = this.expr(node.right, ctx);
@@ -574,8 +619,11 @@ class Transpiler {
       const nm = node.identifier;
       if (this.stage === 'vertex' && nm === 'gl_Position') return '__out.gl_Position';
       if (ctx.boxed && ctx.boxed.has(nm)) return `${nm}.v`; // P1-31: 装箱标量
-      // vert 的 varying 输出 → __v.name
-      if (this.stage === 'vertex' && this.kindOfName(nm) === 'varying') {
+      // varying 左值 → __v.name（**不分阶段**：片元里也允许写 varying 的分量/整变量，
+      // 例如 geometric_transform 的 `v_TexCoord[0] = …`；读取路径 (expr) 一直是
+      // 不分阶段的，此前只有左值漏了片元分支 ⇒ 生成裸标识符 → ReferenceError）。
+      // 局部同名遮蔽时以局部为准（isLocalShadow）。
+      if (!this.isLocalShadow(nm, ctx) && this.kindOfName(nm) === 'varying') {
         return `__v.${nm}`;
       }
       return this.resolveName(nm, ctx);
@@ -615,7 +663,8 @@ class Transpiler {
     if (node.type === 'identifier') {
       if (this.stage === 'vertex' && node.identifier === 'gl_Position') return '__out.gl_Position';
       if (ctx.boxed && ctx.boxed.has(node.identifier)) return `${node.identifier}.v`;
-      if (this.stage === 'vertex' && this.kindOfName(node.identifier) === 'varying') return `__v.${node.identifier}`;
+      // 同上: varying 左值基座不分阶段（片元侧的 `v_TexCoord.xz *= …` 等）；局部遮蔽优先
+      if (!this.isLocalShadow(node.identifier, ctx) && this.kindOfName(node.identifier) === 'varying') return `__v.${node.identifier}`;
       return this.resolveName(node.identifier, ctx);
     }
     return this.expr(node, ctx).code;
@@ -645,20 +694,21 @@ class Transpiler {
         if (this.stage === 'vertex' && nm === 'gl_Position') {
           return { code: '__out.gl_Position', type: 'vec4', simple: true };
         }
-        if (this.kindOfName(nm) === 'varying') code = `__v.${nm}`;
+        // 局部同名遮蔽优先于 varying（GLSL 作用域: 局部遮蔽全局）
+        if (!this.isLocalShadow(nm, ctx) && this.kindOfName(nm) === 'varying') code = `__v.${nm}`;
         else if (ctx.boxed && ctx.boxed.has(nm)) code = `${nm}.v`; // P1-31: 装箱标量
         else code = this.resolveName(nm, ctx);
         return { code, type: this.typeOfName(nm, ctx.locals), simple: true };
       }
       case 'int_constant':
-        return { code: node.token, type: 'int', simple: true };
+        return { code: jsNumber(node.token), type: 'int', simple: true };
       case 'float_constant':
-        return { code: node.token, type: 'float', simple: true };
+        return { code: jsNumber(node.token), type: 'float', simple: true };
       case 'bool_constant':
         return { code: node.token, type: 'bool', simple: true };
       case 'literal': {
         // 数字 token (罕见)
-        if (/^[0-9.eE+-]+$/.test(node.literal)) return { code: node.literal, type: /\./.test(node.literal) ? 'float' : 'int', simple: true };
+        if (/^[0-9.eE+-]+$/.test(node.literal)) return { code: jsNumber(node.literal), type: /\./.test(node.literal) ? 'float' : 'int', simple: true };
         return { code: '0', type: 'float', simple: true };
       }
       case 'binary':

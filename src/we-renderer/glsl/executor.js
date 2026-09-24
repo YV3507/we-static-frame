@@ -3,13 +3,18 @@
 //       vert 4 角跑 varying → 双线性插值 → frag 逐像素 main() → RGBA
 import { parse } from '@shaderfrog/glsl-parser';
 import { transpile } from './transpile.js';
-import { preprocessShader, parseMeta, expandIncludes } from './preprocess.js';
+import { preprocessShader, parseMeta, expandIncludes, renameReservedSample } from './preprocess.js';
 import { runtimeObject, DISCARD } from './runtime.js';
 
 export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolveInclude = null, onWarn = null }) {
-  // GLS-22: 先展开 include 再取 meta — 头文件内声明的 uniform/元注释不再丢失
-  const fragX = resolveInclude ? expandIncludes(fragSource, resolveInclude, { onWarn }) : fragSource;
-  const vertX = vertSource && resolveInclude ? expandIncludes(vertSource, resolveInclude, { onWarn }) : vertSource;
+  // GLS-22: 先展开 include 再取 meta — 头文件内声明的 uniform/元注释不再丢失。
+  // 展开后立刻做保留字改名：shaderfrog 把 sample/buffer/shared/patch/precise/subroutine
+  // 当保留字（GLSL ES 1.0 里合法），以它们命名的变量会让整个 shader 解析失败 ⇒ 效果
+  // 被整条丢弃。材质路径 (material.js) 早已启用，效果路径此前漏了（见 preprocess.js 注释）。
+  const fragX = renameReservedSample(resolveInclude ? expandIncludes(fragSource, resolveInclude, { onWarn }) : fragSource);
+  const vertX = vertSource && resolveInclude
+    ? renameReservedSample(expandIncludes(vertSource, resolveInclude, { onWarn }))
+    : (vertSource ? renameReservedSample(vertSource) : vertSource);
   const metaF = parseMeta(fragX);
   const metaV = vertX ? parseMeta(vertX) : { combos: {}, uniforms: {} };
   const meta = {
@@ -32,10 +37,20 @@ export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolv
     varyings = collectVaryings(vertAst);
   }
   const fragFn = new Function('__u', '__v', '__a', '__rt', fragCode);
+  // ── 引擎隐式 varying: v_TexCoord ──────────────────────────────────────────
+  // WE 的效果着色器可以直接在**片元**里使用 v_TexCoord（当前片元的纹理坐标），而顶点侧
+  // 既不声明也不写它（实测 bloom / lens_flare_sun / bokeh_blur 的 vert 完全没有 varying）。
+  // 此前 __v.v_TexCoord 根本不存在 ⇒ 片元读 `__v.v_TexCoord[0]` 抛
+  // "Cannot read properties of undefined (reading '0')" ⇒ 整个效果被丢弃。
+  // 这里补一条 implicit 条目，由 renderGlsl 用全屏 quad 的角点 uv 兜底
+  // （顶点若自己声明并写了同名的 varying，会被它覆盖，语义仍然是"引擎提供默认值"）。
+  if (/\bv_TexCoord\b/.test(fragCode) && !varyings.some((v) => v.name === 'v_TexCoord')) {
+    varyings = [{ name: 'v_TexCoord', type: 'vec4', implicit: true }, ...varyings];
+  }
   // fragPre/vertPre 一并返回: GPU 路径 (gpu-gl/adapter.js) 需要**同一份**预处理源码。
   // 与 CPU 解释器共用预处理 ⇒ 两侧跑的是同一个程序 (include 展开 / combo 宏 / meta
   // 兜底都不会分叉), 这是 GPU 输出能与 CPU 对齐的前提。
-  return { fragFn, vertFn, varyings, uniforms: meta.uniforms, combos: meta.combos, fragPre, vertPre };
+  return { fragFn, vertFn, varyings, uniforms: meta.uniforms, combos: meta.combos, fragPre, vertPre, fragCode };
 }
 
 function collectVaryings(ast) {
@@ -212,6 +227,11 @@ export function renderGlsl(compiled, { width, height, u, sampler }) {
       const __v = {};
       for (const vn of compiled.varyings) {
         __v[vn.name] = new Float32Array(VEC_LEN[vn.type] || 4);
+      }
+      // 引擎隐式 varying (v_TexCoord): 先用全屏 quad 的角点 uv 兜底 —— 顶点若自己声明并写
+      // 了同名 varying, 会在 main() 里覆盖掉这个默认值 (与官方引擎"引擎提供默认值"一致)。
+      for (const vn of compiled.varyings) {
+        if (vn.implicit && vn.name === 'v_TexCoord') __v[vn.name].set([c.uv[0], c.uv[1], c.uv[0], c.uv[1]]);
       }
       const vertCtx = compiled.vertFn(u, __v, __a, rt);
       if (vertCtx.__initGlobals) vertCtx.__initGlobals(); // GLS-26: 逐角重置全局

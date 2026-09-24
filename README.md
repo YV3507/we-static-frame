@@ -99,7 +99,17 @@ test/survey.mjs         ← 普查：本机全库逐个渲染，汇总空白帧 
   将来若确认它属于"渲染"而非"宿主策略"，可迁移到这里（迁移前不要在两处各写一份）。
 - `--gpu` 的实际收益只在**效果链**上，且**取决于场景**：效果占比高的场景实测 1.8×–4.4×，
   效果少或触发熔断的场景会持平甚至变慢 —— 非效果段仍是 CPU。
-- 已知缺陷与修复进度见 [Issues](https://github.com/YV3507/we-static-frame/issues)。
+- **已知残余降级**（本地 16 场景实测，2026-02；都已上报，不会静默）：
+  - 内嵌视频纹理场景 2/16 输出空白帧（设计限制，见上）。
+  - `auto_sway`：`main is not defined` —— shader 用 `#if AA_VERSION == 1/2/3` 分出三份 `main`，
+    而 `AA_VERSION`/`NODE_COUNT` 未在 shader/材质/effect.json 里给出默认值 ⇒ 三个分支全被裁掉。
+    需要在 combo 注入侧补"场景材质实例 → pass combos"的传递。
+  - `lens_flare_sun`：`x.map is not a function` —— 进入其 `noise()` 后返回了非数值；待最小复现。
+  - `bokeh_blur` / `bloom`：`Cannot read properties of undefined (reading '0')`；待最小复现。
+  - `3582367840` 的某个效果：预处理器在 `#endif` 报 `Expected control line`（`#if` 结构不被
+    shaderfrog 预处理器接受）。
+  用 `--log` 或 `DSH_WE_FX_TRACE=1`（会打印生成的 JS 出错行）可定位。
+- 更多缺陷与修复进度见 [Issues](https://github.com/YV3507/we-static-frame/issues)。
 
 ## 许可证
 
