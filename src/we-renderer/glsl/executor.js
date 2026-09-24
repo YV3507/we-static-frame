@@ -1,7 +1,9 @@
 // WE GLSL 效果执行器 — 编译 shader → 逐像素渲染
 // 流程: include 展开 + combo 宏 → preprocess → parse → transpile → new Function
 //       vert 4 角跑 varying → 双线性插值 → frag 逐像素 main() → RGBA
-import { parse } from '@shaderfrog/glsl-parser';
+// 显式 index.js：该包 package.json 没有 main/exports，裸包名 import 会触发
+// Node 的 DEP0151 弃用警告（每次运行都打到 stderr，与 --log 的诊断混在一起）。
+import { parse } from '@shaderfrog/glsl-parser/index.js';
 import { transpile } from './transpile.js';
 import { preprocessShader, parseMeta, expandIncludes, renameReservedSample } from './preprocess.js';
 import { runtimeObject, DISCARD } from './runtime.js';

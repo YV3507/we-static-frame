@@ -12,14 +12,17 @@
 // 另: common_blending.h 用 `in vec3` 参数 (ES 3.0 语法, WebGL1 不支持) —
 // 由 shim 的 floatify 阶段移除 `in ` 限定符 (见 stripInQualifiers)。
 const WE_SHIM_SOURCE = `
-#define M_PI 3.14159265358979323846
-#define M_PI_2 1.57079632679489661923
-#define M_PI_4 0.78539816339744830962
-#define M_1_PI 0.31830988618379067154
-#define M_2_PI 0.63661977236758134308
-#define M_2_SQRTPI 1.12837916709551257390
-#define M_SQRT2 1.41421356237309504880
-#define M_SQRT1_2 0.70710678118654752440
+// ⚠ 常量取值必须与 WE 官方 assets/shaders/common.h 一致：
+// WE 的 M_PI_2 是 **2π**（6.28318530718，命名取自"PI 乘 2"），不是标准数学里的 π/2。
+// 此前这里注入标准库值 (1.57079632679489661923)，与随后 #include 展开进来的 common.h
+// 定义**同名不同值** —— GLSL ES 1.0 规定这是错误，行为取决于编译器实现（可能报错、
+// 也可能只用后出现的那个），是 CPU/GPU 输出分歧的隐患。
+#define M_PI 3.14159265359
+#define M_PI_HALF 1.57079632679
+#define M_PI_2 6.28318530718
+
+#define SQRT_2 1.41421356237
+#define SQRT_3 1.73205080756
 
 float frac(float x) { return fract(x); }
 vec2 frac(vec2 x) { return fract(x); }
