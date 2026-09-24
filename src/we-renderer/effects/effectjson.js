@@ -318,8 +318,14 @@ function installEffectJson(proto) {
       if (rts.has(ref)) { textures[k] = rts.get(ref); continue; }
       textures[k] = (typeof ref === 'string' && ref) ? this.loadTexture(ref) : null;
     }
-    // 取证用：把本 pass 实际绑到的槽位尺寸留给外层 DUMP 行（textures 是本函数局部量）
-    if (DUMP) this._fxJsonLastBinds = textures.map((tx, k) => (tx && tx.width ? k + ':' + tx.width + 'x' + tx.height : k + ':null'));
+    // 取证用：把本 pass 实际绑到的槽位**名字**与尺寸留给外层 DUMP 行。
+    // 必须带名字：本效果里 _downscaled1/_downscaled2/_coc 尺寸都是 80x45，
+    // 只打尺寸无法区分到底绑的是哪一个 RT（本轮排查就卡在这里）。
+    if (DUMP) this._fxJsonLastBinds = textures.map((tx, k) => {
+      const ref = texInfo.refs[k];
+      const nm = ref === 'previous' ? 'previous' : (ref == null ? '-' : String(ref).slice(0, 28));
+      return k + ':' + nm + (tx && tx.width ? '(' + tx.width + 'x' + tx.height + ')' : '(null)');
+    });
     let u;
     try {
       u = buildUniforms(compiled.uniforms, constants, {
