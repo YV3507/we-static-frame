@@ -358,10 +358,16 @@ export class SceneRenderer {
   _applyShaderPatch(key, src, stage) {
     if (!src || this._policyNoop) return src;
     const patch = this.policy.shaderPatch;
-    const fn = patch[key] || patch[(key || '').replace(/^effects\//, '')];
-    if (typeof fn !== 'function') return src;
+    const k = String(key || '');
+    const base = k.slice(k.lastIndexOf('/') + 1).replace(/\.(frag|vert)$/i, ''); // …/gaussian.frag → gaussian
+    const noFx = k.replace(/^effects\//, '');
+    const fn = patch[k] || patch[noFx] || patch[base]
+      // 反向：调用方用短名注册（gaussian），而这里拿到的是完整路径 —— basename 命中即可
+      || Object.keys(patch).find((p) => k.endsWith('/' + p) || k.endsWith('/' + p.replace(/^effects\//, '')));
+    const f = typeof fn === 'function' ? fn : (fn ? patch[fn] : null);
+    if (typeof f !== 'function') return src;
     try {
-      const out = fn(src, { stage, key, renderer: this });
+      const out = f(src, { stage, key: k, renderer: this });
       return typeof out === 'string' && out ? out : src;
     } catch (e) {
       this.log('shaderPatch ' + key + ' 抛错，保持原样: ' + (e && e.message ? e.message : e));

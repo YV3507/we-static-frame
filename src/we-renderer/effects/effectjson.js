@@ -276,11 +276,16 @@ function installEffectJson(proto) {
     for (const [k, v] of Object.entries(chain.combos)) combos[k] = comboStr(v);
     const warn = [];
     let fragX = p.fragX, vertX = p.vertX || null;
-    // 下游 shaderPatch：数据通路的 pass 着色器同样允许覆写（key = 材质 shader stem）。
-    // 有了它就能对单个 pass 做二分定位（例如把 gaussian 的某分支直接改成返回某槽位采样）。
-    if (this._applyShaderPatch && p.shaderStem) {
-      fragX = this._applyShaderPatch(p.shaderStem, fragX, 'fragment');
-      if (vertX) vertX = this._applyShaderPatch(p.shaderStem, vertX, 'vertex');
+    // 下游 shaderPatch：数据通路的 pass 着色器同样允许覆写。
+    // key 依次尝试：shader stem（材质声明里的 shader 路径）→ frag 相对路径 → 材质路径；
+    // core._applyShaderPatch 会再做 basename/去扩展名匹配，故 `{ gaussian: fn }` 也能命中。
+    if (this._applyShaderPatch) {
+      const keys = [p.shaderStem, p.fragRel, p.material].filter(Boolean);
+      for (const k of keys) {
+        const nf = this._applyShaderPatch(k, fragX, 'fragment');
+        const nv = vertX ? this._applyShaderPatch(k, vertX, 'vertex') : null;
+        if (nf !== fragX || (nv && nv !== vertX)) { fragX = nf; if (nv) vertX = nv; break; }
+      }
     }
     let compiled;
     try {
