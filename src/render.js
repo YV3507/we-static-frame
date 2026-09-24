@@ -35,8 +35,19 @@ export function resolveSceneMainFile(src) {
 
 /**
  * 渲染一帧。
+ *
+ * 返回值里的 `degraded` / `blank` 是**给"静默错误"用的**：渲染器在缺纹理、效果编译失败、
+ * 视频纹理无法静态解码等情况下仍然会"成功"返回一张图（甚至整帧空白），
+ * 以前这些只走 log 回调，调用方默认看不见。现在一律结构化返回：
+ *   · degraded: [{object, feature, action}]  —— 每一项都说明"哪一层/哪个效果被跳过了"
+ *   · blank:    true 表示抽样后判定为空白/纯色帧（内嵌视频纹理场景的典型结果）
+ * 需要严格模式时（例如批量出图不允许空白），用 `blank || degraded.length` 自行判定。
+ *
  * @param {object} opts 见文件头
- * @returns {Promise<{png: Uint8Array, width: number, height: number, time: number, sceneSrc: string, ms: number}>}
+ * @returns {Promise<{png: Uint8Array, width: number, height: number, time: number,
+ *   sceneSrc: string, ms: number, weAssetsDir: string|null,
+ *   degraded: Array<{object: string|null, feature: string, action: string}>,
+ *   blank: boolean, meanLuma: number}>}
  */
 export async function renderFrame(opts = {}) {
   const {
@@ -48,11 +59,18 @@ export async function renderFrame(opts = {}) {
 
   const sceneSrc = resolveSceneMainFile(input);
   const t0 = Date.now();
+  // 始终挂自己的收集器；调用方的 onDegraded 仍会逐个收到（收集器不吞掉它）
+  const degraded = [];
+  const collectDegraded = (d) => {
+    degraded.push(d);
+    if (typeof onDegraded === 'function') {
+      try { onDegraded(d); } catch { /* 调用方回调失败不影响渲染 */ }
+    }
+  };
   const renderer = new SceneRenderer(sceneSrc, {
     width, height, time, weAssetsDir, videoFrames,
     gpuAccel: gpuAccel === true,
-    log,
-    ...(typeof onDegraded === 'function' ? { onDegraded } : {}),
+    log, onDegraded: collectDegraded,
   });
 
   // 块行并行预解码（与主插件 worker 同序：构造 → 预热 → render）。
@@ -69,12 +87,38 @@ export async function renderFrame(opts = {}) {
 
   const canvas = renderer.render();
   const png = encodePng(canvas.w, canvas.h, canvas.data);
+  const frame = sampleFrame(canvas.data, canvas.w, canvas.h);
   return {
     png, width: canvas.w, height: canvas.h, time: time == null ? 0 : time, sceneSrc,
     ms: Date.now() - t0,
     // 归一后的实际生效值（入参可能是 <WE>/assets，而内部按 <WE> 根拼 assets/）
     weAssetsDir: renderer.weAssetsDir || null,
+    degraded,
+    blank: frame.blank,
+    meanLuma: frame.meanLuma,
   };
+}
+
+/**
+ * 空白帧粗判（抽样，4K 下 < 1ms）：
+ * 纯黑/单一颜色占比 > 95%，或抽样到的颜色种类 ≤ 4 ⇒ 判定 blank。
+ * 只用于**告警**，不参与任何像素决策。
+ */
+export function sampleFrame(data, w, h) {
+  const STEP = 53; // 质数步长，避免与常见行宽共振
+  let sum = 0, n = 0, black = 0;
+  const colors = new Set();
+  for (let i = 0; i < w * h; i += STEP) {
+    const o = i * 4;
+    const r = data[o], g = data[o + 1], b = data[o + 2];
+    const lum = (r * 299 + g * 587 + b * 114) / 1000;
+    sum += lum; n++;
+    if (r === 0 && g === 0 && b === 0) black++;
+    colors.add(r + ',' + g + ',' + b);
+  }
+  const meanLuma = +(sum / Math.max(1, n)).toFixed(1);
+  const blank = colors.size <= 4 || black / Math.max(1, n) > 0.95;
+  return { meanLuma, blank, colors: colors.size, blackShare: +(black / Math.max(1, n)).toFixed(3) };
 }
 
 /** 便捷：渲染并写出 PNG 文件。 */
@@ -109,4 +153,4 @@ export function locateWeAssets() {
   return null;
 }
 
-export default { renderFrame, renderToFile, resolveSceneMainFile, locateWeAssets };
+export default { renderFrame, renderToFile, resolveSceneMainFile, locateWeAssets, sampleFrame };

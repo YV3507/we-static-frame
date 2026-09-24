@@ -159,7 +159,14 @@ export function installImage(proto) {
         let tex = this.loadModelTexture(o.image, atlasTime != null ? { time: atlasTime } : undefined);
         // §三十三 取证: 取纹理 (含帧解码/缓存命中) 的耗时 —— n 列即为调用次数
         if (profileEnabled) profAdd('对象内部:取纹理', performance.now() - __tTex);
-        if (!tex) { this.log('跳过 image ' + (o.name || o.id) + ': 无纹理'); return; }
+        if (!tex) {
+          this.log('跳过 image ' + (o.name || o.id) + ': 无纹理');
+          // 同样要进 degraded 通道: 主图层无纹理 = 整帧空白, 此前只有 log 可见。
+          // (纹理为什么缺失由 loadTexture 的 texture: 条目给出具体原因)
+          this._degraded(o.name != null ? String(o.name) : null, 'object:image',
+            '图层纹理不可用 → 该图层已跳过（画面缺少这一层；主图层时即整帧空白）');
+          return;
+        }
         // swayimage 摆动 (beach/palms): 纹理级预处理 — swayMask 正弦位移采样
         if (shaderName === 'swayimage') {
           const swayTex = pass && pass.textures && pass.textures[1] ? this.loadTexture(pass.textures[1]) : null;

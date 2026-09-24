@@ -28,22 +28,28 @@
 ```bash
 # 命令行
 npx we-sf render "/path/to/scene.pkg" -o frame.png --w 3840 --h 2160 --t 2.5
-npx we-sf render ./my-scene-dir -o frame.png --we-assets "C:/Program Files (x86)/Steam/steamapps/common/wallpaper_engine/assets"
+npx we-sf render ./my-scene-dir -o frame.png --we-assets ".../wallpaper_engine/assets"
 npx we-sf locate          # 只打印自动定位到的 assets 路径
 npx we-sf render <scene> -o out.png --log      # 把效果编译失败 / 缺纹理 / 降级上报打到 stderr
+npx we-sf render <scene> -o out.png --strict   # 有降级或空白帧时退出码 3（批量出图建议开）
 ```
+
+降级与空白帧**默认就会报到 stderr**（不再静默）：`--json` 里另有结构化的
+`degraded: [{object, feature, action}]` 与 `blank` / `meanLuma` 字段。
+退出码：`0` 干净出图 / `1` 渲染失败 / `2` 参数错误 / `3` 出图但有降级或空白（仅 `--strict`）。
 
 ```js
 // 库
 import { renderFrame, renderToFile, locateWeAssets } from 'we-static-frame';
 
-const { png, width, height, ms } = await renderFrame({
+const { png, width, height, ms, degraded, blank } = await renderFrame({
   input: 'C:/.../431960/3486806915/scene.pkg',
   width: 3840, height: 2160, time: 2.5,
-  weAssetsDir: locateWeAssets(),
+  weAssetsDir: locateWeAssets(),        // <WE>/assets 或 <WE> 本身都接受
   gpuAccel: false,
-  onDegraded: ({ object, feature, action }) => console.warn(feature, action), // 可选：降级留痕
+  onDegraded: ({ object, feature, action }) => console.warn(feature, action), // 可选：实时回调
 });
+if (blank || degraded.length) console.warn('画面与官方不一致', degraded);
 ```
 
 ## 目录结构 / 代码来源契约
@@ -68,12 +74,15 @@ test/survey.mjs         ← 普查：本机全库逐个渲染，汇总空白帧 
 
 ## 已知限制（会静默影响画面，务必先读）
 
-这些都是"渲染成功但结果与官方不一致"的情形，默认只通过 `log` / `onDegraded` 通道暴露；
-用 `--log`，或在代码里传 `onDegraded`，才能看到：
+这些都会让"渲染成功"的图与官方不一致。**现在都会上报**：CLI 打到 stderr 且进
+`--json` 的 `degraded` / `blank`，库调用方从 `renderFrame()` 的返回值或 `onDegraded`
+拿到同样的结构化条目；需要硬性拦截就用 `--strict`（退出码 3）或自行判断
+`blank || degraded.length`。
 
-- **内嵌视频纹理** → 整层被跳过。若主图层就是视频纹理，整帧会是纯黑（exit code 仍为 0）。
-  库调用方需自行抽帧并传 `videoFrames`。
-- **效果编译/执行失败**（GLSL 报错、缺纹理、缺 combo 支持等）→ **该效果被丢弃**，对象保留，画面缺效果。
+- **内嵌视频纹理** → 整层被跳过。若主图层就是视频纹理，整帧会是纯黑（`blank: true`）。
+  库调用方需自行抽帧并传 `videoFrames`；CLI 不支持，`--strict` 下会以 3 退出。
+- **效果编译/执行失败**（GLSL 报错、缺纹理、缺 combo 支持等）→ **该效果被丢弃**，对象保留，
+  画面缺效果（`degraded` 里 feature 形如 `effect:<名字>`）。
 - **`--gpu` 的熔断**：同一进程内连续若干次 GPU 效果失败后，本次渲染剩余效果链全部回退 CPU，
   此时 `--gpu` 可能反而更慢（实测有 0.57×–1.0× 的场景）。
 

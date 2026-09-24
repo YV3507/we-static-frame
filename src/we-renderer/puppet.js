@@ -76,7 +76,13 @@ export function installPuppet(proto) {
           this._mdlCache.set(model.puppet, mesh);
         }
         const tex = this.loadModelTexture(o.image);
-        if (!tex) { this.log('跳过 puppet ' + (o.name || o.id) + ': 无纹理'); return; }
+        if (!tex) {
+          this.log('跳过 puppet ' + (o.name || o.id) + ': 无纹理');
+          // 与 image 图层同因：进 degraded 通道，别让"整块 puppet 消失"只有 log 可见
+          this._degraded(o.name != null ? String(o.name) : null, 'object:puppet',
+            'puppet 纹理不可用 → 该 puppet 已跳过（画面缺少该部件）');
+          return;
+        }
         // 骨骼蒙皮 (动画) 或绑定姿态 — 不用 cropoffset: 官方引擎忽略 cropoffset
         // (wallpaper64.exe 无该字符串), MDL raw bbox 对称 (中心=原点)
         // animationlayers 动画选择: 官方按动画层 (visible=true 层) 选动画, 且全部 visible 层

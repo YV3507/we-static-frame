@@ -327,6 +327,17 @@ export class SceneRenderer {
     try { this.onDegraded({ object, feature, action }); } catch { /* 回调失败不影响渲染 */ }
   }
 
+  // 去重版: 同一「对象 × 功能」只报一次 (纹理/图层在渲染循环里会被反复取到,
+  // 不去重会把 gpu-diag 撑爆)。键与 model.js 的本地 degradedOnce 保持一致。
+  _degradedOnce(object, feature, action) {
+    if (typeof this.onDegraded !== 'function') return;
+    if (!this._degradedSeen) this._degradedSeen = new Set();
+    const key = (object == null ? '' : String(object)) + '|' + feature;
+    if (this._degradedSeen.has(key)) return;
+    this._degradedSeen.add(key);
+    this._degraded(object, feature, action);
+  }
+
   readJsonAny(rel) {
     if (!rel) return null;
     let j = this.pkg.readJson(rel);
@@ -510,6 +521,14 @@ export class SceneRenderer {
           }
         }
         this.log('纹理解析失败 ' + texPath + ': ' + e.message);
+        // 这一条**必须**进 degraded 通道：内嵌视频纹理（WE sync 动画）会让整层无纹理，
+        // 主图层是视频时整帧就是空白 —— 但渲染"成功"、退出码 0。此前只走 log，
+        // 宿主/CLI 默认看不到 ⇒ 静默黑帧。文案直接给出可执行的下一步。
+        const isVideoTex = /embedded mp4|video texture|isVideoMp4/i.test(String(e.message || ''));
+        this._degradedOnce(null, 'texture:' + texPath, isVideoTex
+          ? '内嵌视频纹理无法静态解码（WE sync 视频纹理）→ 该纹理按缺失处理；'
+            + '整层为主图层时输出会是空白帧。库调用方需先抽帧并用 videoFrames 传入（CLI 暂不支持）: ' + texPath
+          : '纹理无法解码 → 按缺失处理（画面可能缺内容或整帧空白）: ' + texPath + ' — ' + e.message);
       }
     }
     // WE 全局 assets 回退: assets/materials/util/noise.tex

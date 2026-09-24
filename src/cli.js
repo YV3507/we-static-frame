@@ -4,11 +4,15 @@
  *
  * 用法：
  *   we-sf render <scene.pkg|场景目录> -o out.png [--w 3840] [--h 2160] [--t 2.5]
- *               [--we-assets <WE>/assets] [--gpu] [--no-warm] [--json] [--log]
+ *               [--we-assets <WE>/assets] [--gpu] [--no-warm] [--json] [--log] [--strict]
  *   we-sf locate                 # 只打印自动定位到的 WE assets 路径
  *
  * `--log` 会把渲染器的诊断（效果编译失败 / include 未解析 / 粒子精灵缺失 / 降级上报）
  * 打到 stderr —— 排查"画面缺效果 / 部件乱"时先开它。
+ *
+ * `--strict` 把"出图了但画面与官方不一致"也当成失败：有任何降级项或空白帧时退出码 3
+ * （0 = 干净出图，1 = 渲染失败，2 = 参数错误，3 = 有降级/空白）。批量出图建议开它。
+ * 降级项与空白判定始终会打到 stderr，`--json` 里也有结构化的 `degraded` / `blank`。
  *
  * 无子命令时等价于 `render`。输出走 `process.stdout.write` + 显式退出码
  * （console.log 在某些 Windows shell 自然退出时会丢，实测）。
@@ -21,7 +25,7 @@ const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'render';
 const rest = cmd === argv[0] ? argv.slice(1) : argv;
 
-const opt = { width: 3840, height: 2160, time: 2.5, weAssets: null, gpu: false, warm: true, out: null, json: false, logOn: false, input: null };
+const opt = { width: 3840, height: 2160, time: 2.5, weAssets: null, gpu: false, warm: true, out: null, json: false, logOn: false, strict: false, input: null };
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i];
   const next = () => rest[++i];
@@ -34,6 +38,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (a === '--no-warm') opt.warm = false;
   else if (a === '--json') opt.json = true;
   else if (a === '--log') opt.logOn = true;
+  else if (a === '--strict') opt.strict = true;
   else if (a.startsWith('-')) { process.stderr.write('未知参数: ' + a + '\n'); process.exit(2); }
   else opt.input = a;
 }
@@ -76,16 +81,48 @@ try {
   }));
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, res.png);
+
+  // ── 静默错误上报 ───────────────────────────────────────────────────────
+  // 渲染"成功"不等于画面正确：缺纹理 / 视频纹理 / 效果编译失败都会让画面与官方不一致，
+  // 极端情况（主图层是内嵌视频）就是整帧空白。这里把渲染器收集到的降级项打到 stderr，
+  // 并给可执行的下一步；`--strict` 时以退出码 3 表示"出图了但有降级/空白"。
+  const degraded = res.degraded || [];
+  const warn = (s) => process.stderr.write(s + '\n');
+  if (res.blank) {
+    warn('⚠ 输出疑似空白帧（抽样平均亮度 ' + res.meanLuma + '/255）');
+  }
+  if (!weAssets) warn('⚠ 未定位到 WE assets（效果链会退化）—— 用 WE_ASSETS=<WE>/assets 指定');
+  if (degraded.length) {
+    const videoTex = degraded.some((d) => /视频纹理/.test(d.action) || /embedded mp4/i.test(d.action));
+    warn(`⚠ 有 ${degraded.length} 项降级（画面与官方不一致，对象保留）：`);
+    const seen = new Set();
+    for (const d of degraded) {
+      const key = (d.object || '') + '|' + d.feature;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const act = d.action.length > 110 ? d.action.slice(0, 110) + '…' : d.action;
+      warn('   · [' + d.feature + (d.object ? ' @' + d.object : '') + '] ' + act);
+      if (seen.size >= 6) { warn(`   · …其余 ${degraded.length - seen.size} 项用 --log 查看`); break; }
+    }
+    if (videoTex) {
+      warn('   提示：内嵌视频纹理需要调用方用 ffmpeg 抽帧后经库参数 videoFrames 传入（CLI 暂不支持）；');
+      warn('        主图层是视频纹理时，当前输出会是空白帧。');
+    }
+  }
+
   const info = {
     ok: true, out, bytes: res.png.length, width: res.width, height: res.height,
     time: res.time, ms: res.ms, totalMs: Date.now() - t0,
     sceneSrc: resolveSceneMainFile(opt.input), weAssets: weAssets || null, gpu: opt.gpu,
+    blank: !!res.blank, meanLuma: res.meanLuma,
+    degraded: degraded.map((d) => ({ object: d.object || null, feature: d.feature, action: d.action })),
   };
   process.stdout.write((opt.json
     ? JSON.stringify(info)
     : `✓ ${out}  ${res.width}x${res.height}  ${(res.png.length / 1024).toFixed(0)} KB  ${res.ms}ms`
-      + (weAssets ? '' : '  ⚠ 未定位到 WE assets（效果链会退化）')) + '\n');
-  process.exit(0);
+      + (res.blank ? '  ⚠ 空白帧' : '')
+      + (degraded.length ? `  ⚠ 降级 ${degraded.length} 项（见 stderr）` : '')) + '\n');
+  process.exit(opt.strict && (res.blank || degraded.length) ? 3 : 0);
 } catch (e) {
   const err = { ok: false, error: String(e && e.message ? e.message : e) };
   if (opt.json) process.stdout.write(JSON.stringify(err) + '\n');
