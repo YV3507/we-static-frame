@@ -257,6 +257,7 @@ function installEffectJson(proto) {
       // 排查"效果输出退化"时用它找**哪一个 pass 先变成常量**（配合 effects.skipDegenerate=false）。
       if (DUMP) this.log('FX-DUMP ' + name + ' pass' + p.index
         + ' → ' + (p.target || '(direct)') + ' ' + out.width + 'x' + out.height
+        + (rtDef ? ' fmt=' + (rtDef.format || '?') + ' scale=' + (rtDef.scale != null ? rtDef.scale : 1) : '')
         + ' ' + summarizeRgba(out));
     }
     if (!result) {
