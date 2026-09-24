@@ -28,6 +28,7 @@ import { join, dirname, extname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listScenes, describeScene, normalizeSceneInput, workshopRoots } from './lib/scenes.mjs';
 import { DEBUG_ENV_KEYS, debugEnv, runJob } from './lib/render.mjs';
+import { unpackPkg, findSceneEntry, deriveSceneKey, readSidecar } from './lib/unpack.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -227,6 +228,13 @@ async function handle(req, res, url) {
 
   if (p === '/api/scenes') {
     const scenes = listScenes();
+    // 标出哪些 pkg 已经解包过 —— 解包目录才能用「逐对象/逐效果」开关（数据层改写 scene.json）
+    const base = join(TMP, 'unpacked');
+    for (const sc of scenes) {
+      const d = join(base, sc.id);
+      const e = existsSync(d) ? findSceneEntry(d) : null;
+      sc.unpackedDir = e || null;
+    }
     // listScenes 会把不可渲染的条目挂成数组属性，JSON 化时会丢；显式取出来
     return sendJson(res, 200, { ok: true, scenes, skipped: scenes.skipped || [], roots: workshopRoots() });
   }
@@ -285,6 +293,53 @@ async function handle(req, res, url) {
       input, // 可能为 null（用户只传了零散文件）
       hint: input ? null : '上传里没找到 scene.pkg / scene.json，无法直接渲染',
     });
+  }
+
+  if (p === '/api/unpack' && req.method === 'POST') {
+    // scene.pkg → 松散场景目录。逐对象/逐效果开关走数据层（改写 scene.json），
+    // 而 scene.json 封在 PKG 容器里（条目多为 LZ4 块链）⇒ 必须先落成目录。
+    let body;
+    try { body = JSON.parse((await readBody(req)).toString('utf8')); } catch { return sendJson(res, 400, { ok: false, error: '非法 JSON' }); }
+    const src = normalizeSceneInput(body.input);
+    if (!src) return sendJson(res, 400, { ok: false, error: '缺少 input' });
+    if (!existsSync(src) || statSync(src).isDirectory()) {
+      return sendJson(res, 200, { ok: false, error: '不是 scene.pkg 文件（松散目录无需解包）' });
+    }
+    const id = (() => {
+      const norm = src.replace(/\\/g, '/');
+      const m = /\/431960\/([^/]+)\//.exec(norm + '/');
+      return m ? m[1] : 'pkg-' + Date.now().toString(36);
+    })();
+    const out = join(TMP, 'unpacked', id);
+    try {
+      const r = unpackPkg(src, out, { sceneKey: deriveSceneKey(src) });
+      const entry = findSceneEntry(out);
+      return sendJson(res, 200, {
+        ok: !!entry, ...r, input: entry, id,
+        sceneKey: r.sceneKey,
+        hint: entry ? null : '解包完成但目录里没有 scene.json',
+      });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: String(e.message || e), code: e.code || null });
+    }
+  }
+
+  if (p === '/api/unpacks' && req.method === 'GET') {
+    const base = join(TMP, 'unpacked');
+    const list = [];
+    try {
+      for (const name of readdirSync(base)) {
+        const d = join(base, name);
+        try {
+          if (!statSync(d).isDirectory()) continue;
+          const entry = findSceneEntry(d);
+          if (!entry) continue;
+          list.push({ id: name, dir: d, input: entry, sidecar: readSidecar(d), mtimeMs: Math.round(statSync(d).mtimeMs) });
+        } catch { /* ignore */ }
+      }
+    } catch { /* 目录还没建 */ }
+    list.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return sendJson(res, 200, { ok: true, unpacks: list });
   }
 
   if (p === '/api/uploads' && req.method === 'GET') {

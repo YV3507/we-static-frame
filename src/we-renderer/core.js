@@ -101,6 +101,11 @@ export class SceneRenderer {
     // GPU 渲染加速 (sf40h): 仅当配置开启 (sceneGpuAccel, 附属 beta场景动画) 时
     // 内置/GLSL 效果走 WebGL (x64 + supreium-headless-gl), 失败自动回退 CPU
     this.gpuAccel = opts.gpuAccel === true;
+    // 场景身份 (可选): 粒子系统的确定性 RNG 用 "场景标识 + 对象 id + origin" 做种子。
+    // 缺省用场景文件路径 —— 但**同一个场景换路径（例如解包成目录后对照）就会重新掷点**，
+    // 像素随之变化。宿主把"同一场景"的稳定标识传进来即可保持逐像素一致。
+    // 不传 = 旧行为（路径推导），对既有调用方零影响。
+    this._sceneKey = opts.sceneKey != null && opts.sceneKey !== '' ? String(opts.sceneKey) : null;
     // ── 下游决策层 ──────────────────────────────────────────────────────────
     // policy: 逐效果 apply/skip、逐效果后端 (auto/cpu/gpu/gpu-only)、GPU 总开关、
     // decideEffect/decideBackend 钩子、shaderPatch 逐着色器源码覆写。

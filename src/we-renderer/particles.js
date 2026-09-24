@@ -352,11 +352,17 @@ export function installParticles(proto) {
         return pp === 'ultra' || pp === 'displayhdr';
       }
     
-      // mulberry32 确定性 RNG (种子 = 对象 id + 场景路径 hash)
+      // mulberry32 确定性 RNG (种子 = 场景标识 + 对象 id + 对象 origin)
 ,
     _particleRng(o) {
         let seed = 0x9e3779b9;
-        const str = String(this.pkgPath) + '|' + (o.id != null ? o.id : o.name || '') + '|' + (o.origin || '');
+        // 场景标识优先用 `_sceneKey`（宿主可显式指定），否则回落到场景文件路径。
+        // 为什么需要: 种子原先只由 `pkgPath` 推导 ⇒ **同一场景解包成目录后路径变了，
+        // 每颗粒子都会被重新掷一次**（实测 3629379075: pkg 与解包目录 18.7% 像素不同，
+        // 逐对象二分定位到粒子层）。解包是为了改写 scene.json 做逐对象/逐效果对照，
+        // 如果粒子跟着变，"对照"就没有意义了 —— 故让宿主能把"同一场景"的身份传进来。
+        const sceneId = this._sceneKey != null && this._sceneKey !== '' ? this._sceneKey : this.pkgPath;
+        const str = String(sceneId) + '|' + (o.id != null ? o.id : o.name || '') + '|' + (o.origin || '');
         for (let i = 0; i < str.length; i++) {
           seed = (seed ^ str.charCodeAt(i)) * 16777619 >>> 0;
         }

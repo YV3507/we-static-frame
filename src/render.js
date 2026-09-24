@@ -75,6 +75,7 @@ export async function renderFrame(opts = {}) {
     weAssetsDir = null, videoFrames = null, gpuAccel = false,
     warm = true, log = () => {}, onDegraded = null,
     gpu, effects = null, policy = null, onDecision = null, shaderPatch = null,
+    sceneKey = null,
   } = opts;
   if (!input) throw new Error('renderFrame: input 必填（scene.pkg 路径或场景目录）');
 
@@ -95,6 +96,9 @@ export async function renderFrame(opts = {}) {
     gpuAccel: gpuAccel === true || gpu === 'auto' || gpu === 'force'
       || (gpu && typeof gpu === 'object' && gpu.mode !== 'off' && gpu.enabled !== false),
     log, onDegraded: collectDegraded,
+    // 可选: 场景稳定标识（与文件路径无关）—— 让"同一场景的不同副本"（如解包后的目录）
+    // 跑出逐像素一致的结果；不传则按旧行为用场景路径推导粒子随机种子。
+    sceneKey,
     ...policyOpts,
   });
 

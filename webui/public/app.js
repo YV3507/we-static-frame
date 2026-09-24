@@ -154,7 +154,7 @@ async function doRender() {
 async function loadScenes() {
   try {
     const r = await api('/api/scenes');
-    setState({ scenes: r.scenes || [], workshopRoots: r.roots || [] });
+    setState({ scenes: r.scenes || [], skippedScenes: r.skipped || [], workshopRoots: r.roots || [] });
   } catch (e) {
     setState({ scenes: [], sceneError: String(e.message || e) });
   }
@@ -196,16 +196,76 @@ function renderEnvLine(s) {
 
 function renderSceneList(s) {
   const box = $('#sceneList');
-  $('#sceneCount').textContent = String((s.scenes || []).length);
+  const scenes = s.scenes || [];
+  $('#sceneCount').textContent = String(scenes.length);
   if (s.sceneError) { box.replaceChildren(el('div', 'dim small', s.sceneError)); return; }
-  if (!(s.scenes || []).length) { box.replaceChildren(el('div', 'dim small', '没扫描到场景（可设 WE_SF_WORKSHOP_ROOT 或直接拖拽上传）')); return; }
-  box.replaceChildren(...s.scenes.map((sc) => {
+  if (!scenes.length) { box.replaceChildren(el('div', 'dim small', '没扫描到场景（可设 WE_SF_WORKSHOP_ROOT 或直接拖拽上传）')); return; }
+  const skipped = s.skippedScenes || [];
+  const nodes = scenes.map((sc) => {
     const n = el('div', 'scene' + (s.selected === sc.pkg ? ' active' : ''));
-    n.append(Object.assign(el('span', 'id', sc.id), {}));
-    n.append(el('span', 'meta', sc.sizeMB + 'MB'));
-    n.onclick = () => selectScene(sc.pkg);
+    const left = el('span');
+    left.append(el('span', 'id', sc.id));
+    // 已解包标记：只有解包目录能用逐对象/逐效果开关
+    if (sc.unpackedDir) { const t = el('span', 'tag ok', '已解包'); left.append(t); }
+    n.append(left);
+    const right = el('span', 'meta');
+    right.append(sc.sizeMB + 'MB');
+    if (!sc.unpackedDir) {
+      const b = el('button', 'link unpack', '解包');
+      b.title = '落成松散场景目录 → 可用逐对象/逐效果开关';
+      b.onclick = async (ev) => {
+        ev.stopPropagation();
+        b.textContent = '解包中…'; b.disabled = true;
+        try {
+          const r = await postJson('/api/unpack', { input: sc.pkg });
+          if (!r.ok) { b.textContent = '失败'; b.title = r.error || ''; return; }
+          await loadScenes();
+        } catch (e) { b.textContent = '失败'; b.title = String(e.message || e); }
+      };
+      right.append(b);
+    }
+    n.append(right);
+    n.onclick = () => selectScene(sc.unpackedDir || sc.pkg);
     return n;
-  }));
+  });
+  // 被排除的条目（Video / Web 壁纸）单独说明，别让用户以为漏了
+  if (skipped.length) {
+    const h = el('div', 'listHead', '不支持的条目 ' + skipped.length + ' 个');
+    nodes.push(h);
+    for (const sk of skipped) {
+      const n = el('div', 'scene dim');
+      n.append(el('span', 'id', sk.id));
+      n.append(el('span', 'meta', sk.reason || ''));
+      nodes.push(n);
+    }
+  }
+  box.replaceChildren(...nodes);
+}
+
+/** 效果链面板顶部的「这需要解包」提示条。 */
+function renderUnpackBar(s) {
+  const bar = $('#unpackBar');
+  const sc = (s.scenes || []).find((x) => x.pkg === s.selected);
+  if (!sc) { bar.classList.add('hidden'); return; }
+  if (sc.unpackedDir) {
+    bar.classList.remove('hidden');
+    bar.textContent = '✓ 已解包（' + sc.unpackedDir + '）—— 逐对象/逐效果开关可用。';
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.replaceChildren();
+  bar.append(document.createTextNode('scene.pkg 里的 scene.json 封在 PKG 容器内，逐对象/逐效果开关需要先解包： '));
+  const b = el('button', 'link', '解包这个场景');
+  b.onclick = async () => {
+    b.textContent = '解包中…'; b.disabled = true;
+    try {
+      const r = await postJson('/api/unpack', { input: sc.pkg });
+      if (!r.ok) { b.textContent = '解包失败: ' + (r.error || ''); return; }
+      await loadScenes();
+      selectScene(r.input);
+    } catch (e) { b.textContent = '解包失败: ' + String(e.message || e); }
+  };
+  bar.append(b);
 }
 
 function renderUploads(s) {
@@ -526,6 +586,7 @@ subscribe((s) => {
   renderEnvLine(s);
   renderSceneList(s);
   renderUploads(s);
+  renderUnpackBar(s);
   renderChain(s);
   if (!built) { renderDebug(s); built = true; }
   renderResult(s);

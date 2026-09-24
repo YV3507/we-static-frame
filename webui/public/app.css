@@ -93,8 +93,12 @@ label.check input { margin: 0; }
 .scene:hover { border-color: #47505f; }
 .scene.active { border-color: var(--accent); background: #1a2432; }
 .scene .id { font-family: var(--mono); }
-.scene .meta { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.scene .meta { font-size: 11px; color: var(--dim); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.scene .tag { font-size: 10px; border-radius: 999px; padding: 0 6px; border: 1px solid var(--line); }
+.scene .tag.ok { color: var(--ok); border-color: #24603f; }
+.scene button.unpack { border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
 .uploads { margin-top: 14px; }
+#unpackBar code, .hint code { font-family: var(--mono); color: var(--accent); }
 
 /* ── tabs ── */
 .tabs, .resultTabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }

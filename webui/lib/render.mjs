@@ -6,7 +6,7 @@
 // 干净的子进程**，环境变量按请求注入。渲染本身是秒级，进程启动 ~300ms 可接受。
 //
 // 本文件只做"把 job 翻译成 renderFrame 参数"，不含任何 UI 逻辑。
-import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { renderFrame } from '../../src/render.js';
 import { normalizeSceneInput } from './scenes.mjs';
@@ -76,7 +76,12 @@ export function applyVisibilityOverrides(input, job) {
   const hideEffects = Array.isArray(job.hideEffects) ? job.hideEffects : []; // [{object, index}]
   if (!hideObjects.length && !hideEffects.length) return { input, tmp: null };
 
-  const dir = dirname(input);
+  // input 既可能是**场景目录**（松散/解包），也可能是**文件**（scene.pkg 或某个 .json）。
+  // 两者取 scene.json 的方式不同：目录 → 它自己；文件 → 与它同级的目录。早先一律
+  // dirname(input)，对"目录"入参会往上跳一级 ⇒ 明明已解包却说"需要解包"。
+  let dir;
+  try { dir = statSync(input).isDirectory() ? input : dirname(input); }
+  catch { dir = dirname(input); }
   const scenePath = join(dir, 'scene.json');
   if (!existsSync(scenePath)) {
     // scene.pkg 形态: 场景 JSON 在 PKG 容器内（且条目是 LZ4 块链），本层不改写压缩包。
@@ -115,6 +120,9 @@ export function buildRenderOpts(job) {
     weAssetsDir: render.weAssetsDir || null,
     warm: render.warm !== false,
     gpuAccel: render.gpuAccel === true,
+    // 场景稳定标识: 让"同一场景的副本"（uploads / 解包目录）跑出与原 pkg 逐像素一致的结果。
+    // 粒子系统的确定性 RNG 用它做种子（见 we-renderer/particles.js::_particleRng）。
+    sceneKey: job.sceneKey || null,
     // 渲染器的日志回调由调用方注入（子进程入口注入 → stderr）；未注入即静默
     log: typeof render.log === 'function' ? render.log : () => {},
   };
@@ -171,6 +179,12 @@ export async function runJob(job) {
   if (!normalized) throw new Error('场景不存在: ' + job.input);
   const vis = applyVisibilityOverrides(normalized, job);
   const opts = buildRenderOpts(job);
+  // 场景稳定标识: 让"同一场景的副本"（上传副本 / 解包目录）与原 pkg 跑出逐像素一致的结果
+  // —— 粒子系统的确定性 RNG 以它为种子（we-renderer/particles.js::_particleRng）。
+  if (!opts.sceneKey) {
+    const { deriveSceneKey } = await import('./unpack.mjs');
+    opts.sceneKey = deriveSceneKey(normalized);
+  }
   if (!opts.weAssetsDir) {
     const { locateWeAssets } = await import('../../src/render.js');
     opts.weAssetsDir = locateWeAssets();
