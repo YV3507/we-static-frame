@@ -307,6 +307,19 @@ function installEffectJson(proto) {
         sampler: (tex, uu, vv) => this._texSample(tex, uu, vv, !(tex && tex.__glslRepeat)),
       });
     } catch (e) {
+      // 诊断开关 DSH_WE_FX_TRACE=1（与 glsl/integration.js 同一约定）: 打出生成 JS 的出错行。
+      // <anonymous>:L 与 fragCode 行号差 2（new Function 的函数头占两行）。
+      if (process.env.DSH_WE_FX_TRACE === '1') {
+        try {
+          const m = /<anonymous>:(\d+):(\d+)/.exec(e.stack || '');
+          this.log('FX-TRACE(json) ' + name + ' pass' + p.index + ' stack=' + (e.stack || '').split('\n').slice(0, 3).join(' | '));
+          if (m) {
+            const lines = String(compiled && compiled.fragCode || '').split('\n');
+            const ln = Number(m[1]) - 2;
+            this.log('FX-TRACE(json) genLine(' + ln + ')= ' + String(lines[ln - 1] || '').slice(0, 300));
+          }
+        } catch { /* 诊断失败不影响渲染 */ }
+      }
       this._fxJsonLastError = 'pass ' + p.index + ' 渲染异常: ' + e.message;
       return null;
     }

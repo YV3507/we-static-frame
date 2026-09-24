@@ -70,7 +70,19 @@ function collectVaryings(ast) {
     if (!quals.includes('varying')) continue;
     const type = typeOfSpec(dl.specified_type);
     for (const d of dl.declarations || []) {
-      if (d.type === 'declaration') out.push({ name: d.identifier.identifier, type });
+      if (d.type !== 'declaration') continue;
+      // 数组 varying (工坊 shader 常见: `varying vec2 v_TexCoord[4];` 做 4 抽头降采样):
+      // 必须带上数组长度 —— 否则 renderGlsl 按标量分配 Float32Array(2)，
+      // 片元里 `v_TexCoord[i]`（i≥2）取到 undefined ⇒ texSample2D 抛
+      // "Cannot read properties of undefined (reading '0')" ⇒ 整个 pass 失败
+      // （实测 bloom / bokeh_blur / lens_flare_sun 的 down_sample、light_map、downsample）。
+      const q = d.quantifier;
+      let arrayLen = 0;
+      if (q && q.length) {
+        const e = q[0].expression;
+        arrayLen = Number(e && (e.token !== undefined ? e.token : e.literal)) || 0;
+      }
+      out.push({ name: d.identifier.identifier, type: arrayLen ? type + '[]' : type, arrayLen });
     }
   }
   return out;
@@ -211,35 +223,47 @@ export function makeSampler(sampleFn) {
 // F-10: textures/time 是死参, 已删除 (sampler/u 由调用方组装)
 export function renderGlsl(compiled, { width, height, u, sampler }) {
   const rt = runtimeObject(sampler);
+  // 全屏 quad 的四角 (uv 与 NDC 位置一一对应) —— 顶点程序与隐式 varying 都用它
+  const corners = [
+    { uv: [0, 0], pos: [-1, -1, 0] },
+    { uv: [1, 0], pos: [1, -1, 0] },
+    { uv: [0, 1], pos: [-1, 1, 0] },
+    { uv: [1, 1], pos: [1, 1, 0] },
+  ];
   // ── vert 4 角 → varying 角值 ──
   const cornerVals = {};
   if (compiled.vertFn) {
     for (const vn of compiled.varyings) cornerVals[vn.name] = [];
     // P1-39: 4 角给真实角点 — a_Position = 全屏 quad NDC 角 (与 a_TexCoord 角一一对应,
     // 此前恒 [0,0,0] → 依赖 a_Position 的 vert 全部塌缩到单点)
-    const corners = [
-      { uv: [0, 0], pos: [-1, -1, 0] },
-      { uv: [1, 0], pos: [1, -1, 0] },
-      { uv: [0, 1], pos: [-1, 1, 0] },
-      { uv: [1, 1], pos: [1, 1, 0] },
-    ];
     for (const c of corners) {
       const __a = { a_TexCoord: c.uv, a_Position: c.pos };
       // 预初始化 varying 数组 (vert 里 swizzle 写分量需要已存在)
       const __v = {};
       for (const vn of compiled.varyings) {
-        __v[vn.name] = new Float32Array(VEC_LEN[vn.type] || 4);
+        // 数组 varying: 容器 = 每元素一个 Float32Array（顶点可能只写元素的某个分量）
+        __v[vn.name] = vn.arrayLen
+          ? Array.from({ length: vn.arrayLen }, () => new Float32Array(VEC_LEN[vn.type.replace('[]', '')] || 4))
+          : new Float32Array(VEC_LEN[vn.type] || 4);
       }
       // 引擎隐式 varying (v_TexCoord): 先用全屏 quad 的角点 uv 兜底 —— 顶点若自己声明并写
       // 了同名 varying, 会在 main() 里覆盖掉这个默认值 (与官方引擎"引擎提供默认值"一致)。
       for (const vn of compiled.varyings) {
-        if (vn.implicit && vn.name === 'v_TexCoord') __v[vn.name].set([c.uv[0], c.uv[1], c.uv[0], c.uv[1]]);
+        if (vn.implicit && !vn.arrayLen && vn.name === 'v_TexCoord') __v[vn.name].set([c.uv[0], c.uv[1], c.uv[0], c.uv[1]]);
       }
       const vertCtx = compiled.vertFn(u, __v, __a, rt);
       if (vertCtx.__initGlobals) vertCtx.__initGlobals(); // GLS-26: 逐角重置全局
       vertCtx.main();
       for (const vn of compiled.varyings) cornerVals[vn.name].push(__v[vn.name]);
     }
+  }
+  // 隐式 varying 的角点值**不能依赖顶点程序存在**：效果链里大量 pass 只有 .frag
+  // (bloom / bokeh_blur / lens_flare_sun 的 down_sample、light_map 等)，
+  // 此时上面那段角点循环根本不执行 ⇒ __v.v_TexCoord 缺失 ⇒ 片元读 __v.v_TexCoord[0]
+  // 抛 "Cannot read properties of undefined (reading '0')" ⇒ 整个 pass 失败。
+  for (const vn of compiled.varyings) {
+    if (!vn.implicit || vn.arrayLen || cornerVals[vn.name]) continue;
+    cornerVals[vn.name] = corners.map((c) => Float32Array.from([c.uv[0], c.uv[1], c.uv[0], c.uv[1]]));
   }
   // ── frag 装配 (__v 必须与像素循环共享同一对象 — 模块闭包引用构造时传入的引用) ──
   const __v = {};
@@ -259,18 +283,36 @@ export function renderGlsl(compiled, { width, height, u, sampler }) {
   // P1-8⑤: 循环不变量外提 — varying 角值/插值缓冲预取成局部数组;
   // 数组型 varying 的 __v 槽只绑定一次 (frag 侧只读 __v, bilinearTo 就地写
   // 复用缓冲), 免逐像素 for..of 遍历 + 三重键查找
-  const arrV = [], sclV = [];
+  const arrV = [], sclV = [], arrElems = [];
   for (const vn of compiled.varyings) {
+    if (vn.arrayLen) {
+      // 数组 varying: 逐元素插值, 就地写回容器 (frag 读的是同一个 __v[name][e])
+      const elemLen = VEC_LEN[vn.type.replace('[]', '')] || 4;
+      if (!__v[vn.name]) __v[vn.name] = Array.from({ length: vn.arrayLen }, () => new Float32Array(elemLen));
+      const c4 = cornerVals[vn.name]; // [corner0容器, corner1容器, corner2容器, corner3容器]
+      const elems = [];
+      for (let e = 0; e < vn.arrayLen; e++) {
+        const buf = new Float32Array(elemLen);
+        __v[vn.name][e] = buf;
+        if (c4) elems.push({ corner: c4.map((c) => c[e]), buf });
+      }
+      if (elems.length) arrElems.push(elems);
+      continue;
+    }
     const buf = vbufs[vn.name];
     if (buf) { __v[vn.name] = buf; arrV.push([cornerVals[vn.name], buf]); }
     else sclV.push([vn.name, cornerVals[vn.name]]);
   }
-  const nArr = arrV.length, nScl = sclV.length;
+  const nArr = arrV.length, nScl = sclV.length, nArrE = arrElems.length;
   for (let y = 0; y < height; y++) {
     const fv = (y + 0.5) / height; // 行不变量外提 (纯除法, 结果逐位不变)
     for (let x = 0; x < width; x++) {
       const fu = (x + 0.5) / width;
       for (let k = 0; k < nArr; k++) { const p = arrV[k]; bilinearTo(p[0], fu, fv, p[1]); }
+      for (let k = 0; k < nArrE; k++) {
+        const elems = arrElems[k];
+        for (let e = 0; e < elems.length; e++) bilinearTo(elems[e].corner, fu, fv, elems[e].buf);
+      }
       for (let k = 0; k < nScl; k++) { const p = sclV[k]; __v[p[0]] = bilinearTo(p[1], fu, fv, null); }
       if (initGlobals) initGlobals(); // GLS-26: 全局逐像素重置 (GLSL 语义; const 全局已在转译期排除)
       // P0-15: 重置残留 (discard/早退像素不泄漏到下一像素) — P1-8⑤: 显式赋值替代 fill(0) 方法调用
