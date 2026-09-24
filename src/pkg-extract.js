@@ -1570,7 +1570,7 @@ function tryCompositeSceneLayers(scene, access, label) {
     let img = null;
     if (decodeCache.has(texPath)) {
       img = decodeCache.get(texPath);
-      if (profileEnabled) profAdd('合成:解码缓存命中', 0);
+      if (profileEnabled()) profAdd('合成:解码缓存命中', 0);
     } else {
       const file = access.readFile(texPath);
       if (!file) continue;

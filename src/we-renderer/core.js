@@ -493,7 +493,7 @@ export class SceneRenderer {
   // assets / 外部 PNG 回退), 故拆出实现体统一计时 —— 记为「纹理解码 + 缓存查询」
   // 总成本, 不改变任何调用语义与像素输出。关闭剖析时直接透传实现体。
   loadTexture(pathOrName, opts) {
-    if (!profileEnabled) return this._loadTextureImpl(pathOrName, opts);
+    if (!profileEnabled()) return this._loadTextureImpl(pathOrName, opts);
     const __t = performance.now();
     try {
       return this._loadTextureImpl(pathOrName, opts);
@@ -1018,7 +1018,7 @@ export class SceneRenderer {
   render() {
     const t = this.time;
     // 剖析基准 (仅 DSH_WE_PROFILE=1 时取时钟)
-    const __t0 = profileEnabled ? performance.now() : 0;
+    const __t0 = profileEnabled() ? performance.now() : 0;
     // P0-5 泄漏修复: 帧首召回 —— 上一帧各效果链的链尾输出无人归还 (state 停在
     // 'out'), 一个效果对象一帧滞留一块整帧缓冲 (4K=33MB, 240 帧动画数 GB)。
     // 安全性: 召回只影响上一帧的缓冲; 本帧内被 _rtTex/链上持有的缓冲保持 'out',
@@ -1035,7 +1035,7 @@ export class SceneRenderer {
     profTime('阶段:相机', () => this._setupCamera());
     // scene scripts: 执行 {script, value} 更新 (彩虹色/visible/bloom 等动态值)
     // 多帧复用: 首次备份原始 value, 每帧先恢复再执行 (避免脚本值跨帧累积污染)
-    const __tscript = profileEnabled ? performance.now() : 0;
+    const __tscript = profileEnabled() ? performance.now() : 0;
     this._backupScriptValues();
     this._restoreScriptValues();
     try {
@@ -1057,7 +1057,7 @@ export class SceneRenderer {
         log: this.log,
       });
     } catch { /* 脚本失败不影响渲染 */ }
-    if (profileEnabled) profAdd('阶段:脚本', performance.now() - __tscript);
+    if (profileEnabled()) profAdd('阶段:脚本', performance.now() - __tscript);
     // clearColor
     const cc = this.scene.general && this.scene.general.clearcolor;
     if (cc && this.scene.general.clearenabled !== false) {
@@ -1068,7 +1068,7 @@ export class SceneRenderer {
     // 官方反射 pass 必须先于主 pass (wallpaper64.exe.c:285410 早于 285621) ——
     // 主 pass 的材质 (grid/generic 的 REFLECTION 分支) 要能取到镜像缓冲。
     profTime('阶段:反射', () => this._renderReflectionPass(order, t));
-    const __tobj = profileEnabled ? performance.now() : 0;
+    const __tobj = profileEnabled() ? performance.now() : 0;
     for (const o of order) {
       try {
         // 剖析: 明细 → 类型 双层嵌套 (明细含对象名, 类型用于横向汇总)
@@ -1095,7 +1095,7 @@ export class SceneRenderer {
         this.log('对象 ' + (o.name || o.id) + ' 渲染失败: ' + e.message);
       }
     }
-    if (profileEnabled) profAdd('阶段:对象循环', performance.now() - __tobj);
+    if (profileEnabled()) profAdd('阶段:对象循环', performance.now() - __tobj);
     // Bloom 后处理 (WE 场景标配: 亮部提取 → 降采样模糊 → 叠加)
     const gen = this.scene.general || {};
     profTime('阶段:bloom', () => {
@@ -1103,7 +1103,7 @@ export class SceneRenderer {
         this._applyBloom(gen);
       }
     });
-    if (profileEnabled) profAdd('总渲染', performance.now() - __t0);
+    if (profileEnabled()) profAdd('总渲染', performance.now() - __t0);
     return this.canvas;
   }
 

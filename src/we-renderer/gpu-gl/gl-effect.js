@@ -457,7 +457,7 @@ export function runEffectOnGL({ fragPre, vertPre = null, u = {}, width, height }
   // **不需要 Y 翻转** (flipY 会把顶行错采到源底部 — 实测蓝通道 199 异常)。
   const out = new Uint8Array(width * height * 4);
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, out);
-  if (process.env.DSH_WE_DEBUG_GLSL === '1') {
+  if (process.env.DSH_WE_DEBUG_GLSL === '1') { // 每次调用读取（便于宿主/WebUI 逐请求切换）
     // 诊断: 效果输出统计 (定位 GPU 全白/全黑问题 — 全白通常是采样纹理未绑定/
     // null sampler 绑了白纹理后未走正确分支)
     let s = 0, m = 0, white = 0, nz = 0;

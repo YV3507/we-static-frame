@@ -28,9 +28,13 @@ const MAX_JSON_GLSL_PIXELS = 65536;
 
 // A/B 开关 (与 DSH_WE_NO_FX / DSH_WE_NO_FX_CHAIN 同风格): 关掉数据驱动通路, 回到
 // "猜名 GLSL + 记 degraded" 的旧行为。默认开 —— 仅用于逐帧 SHA 对照取证。
-const JSON_FX_OFF = process.env.DSH_WE_NO_FXJSON === '1';
+//
+// 读取时机 = **每次调用**, 不是模块加载期: 宿主/调试工具需要能在运行中途切换这些开关
+// （WebUI 的逐请求诊断面板靠它）。对"启动前设好环境变量"的既有用法行为完全一致。
+const jsonFxOff = () => process.env.DSH_WE_NO_FXJSON === '1';
 // 逐 pass 取证开关（见 effects.js 的退化保护 / issue #2）
-const DUMP = process.env.DSH_WE_FX_DUMP === '1';
+const dumpOn = () => process.env.DSH_WE_FX_DUMP === '1';
+const traceOn = () => process.env.DSH_WE_FX_TRACE === '1';
 
 /** 像素摘要：采样亮度均值 / 覆盖度（alpha>8）/ 不同颜色数，用于"哪个 pass 先变常量"。 */
 export function summarizeRgba(m) {
@@ -272,7 +276,7 @@ function installEffectJson(proto) {
       else result = out;
       // 逐 pass 取证 (DSH_WE_FX_DUMP=1): 打印每个 pass 产出的尺寸与像素摘要。
       // 排查"效果输出退化"时用它找**哪一个 pass 先变成常量**（配合 effects.skipDegenerate=false）。
-      if (DUMP) this.log('FX-DUMP ' + name + ' pass' + p.index
+      if (dumpOn()) this.log('FX-DUMP ' + name + ' pass' + p.index
         + ' → ' + (p.target || '(direct)') + ' ' + out.width + 'x' + out.height
         + (rtDef ? ' fmt=' + (rtDef.format || '?') + ' scale=' + (rtDef.scale != null ? rtDef.scale : 1) : '')
         + ' binds=' + ((this._fxJsonLastBinds || []).join(','))
@@ -306,7 +310,7 @@ function installEffectJson(proto) {
       }
     }
     // 取证：记录本 pass 实际编译的源码签名（用于确认 shaderPatch 是否作用到了这个 pass）
-    if (DUMP) this._fxJsonLastSrc = String(fragX).slice(0, 60).replace(/\s+/g, ' ');
+    if (dumpOn()) this._fxJsonLastSrc = String(fragX).slice(0, 60).replace(/\s+/g, ' ');
     let compiled;
     try {
       compiled = compileGlsl({
@@ -338,7 +342,7 @@ function installEffectJson(proto) {
     // 取证用：把本 pass 实际绑到的槽位**名字**与尺寸留给外层 DUMP 行。
     // 必须带名字：本效果里 _downscaled1/_downscaled2/_coc 尺寸都是 80x45，
     // 只打尺寸无法区分到底绑的是哪一个 RT（本轮排查就卡在这里）。
-    if (DUMP) this._fxJsonLastBinds = textures.map((tx, k) => {
+    if (dumpOn()) this._fxJsonLastBinds = textures.map((tx, k) => {
       const ref = texInfo.refs[k];
       const nm = ref === 'previous' ? 'previous' : (ref == null ? '-' : String(ref).slice(0, 28));
       return k + ':' + nm + (tx && tx.width ? '(' + tx.width + 'x' + tx.height + ')' : '(null)');
@@ -393,7 +397,7 @@ function installEffectJson(proto) {
     } catch (e) {
       // 诊断开关 DSH_WE_FX_TRACE=1（与 glsl/integration.js 同一约定）: 打出生成 JS 的出错行。
       // <anonymous>:L 与 fragCode 行号差 2（new Function 的函数头占两行）。
-      if (process.env.DSH_WE_FX_TRACE === '1') {
+      if (traceOn()) {
         try {
           const m = /<anonymous>:(\d+):(\d+)/.exec(e.stack || '');
           this.log('FX-TRACE(json) ' + name + ' pass' + p.index + ' stack=' + (e.stack || '').split('\n').slice(0, 3).join(' | '));
@@ -416,7 +420,7 @@ function installEffectJson(proto) {
 
   // 大对象降采样 (多帧动画路径): 与 glsl/integration.js 同口径 —— 静态帧不降采样。
   proto._applyEffectJsonEffectScaled = function (img, ef, name, t) {
-    if (JSON_FX_OFF) { this._fxJsonLastError = 'DSH_WE_NO_FXJSON=1 (A/B 对照, 数据驱动通路关闭)'; return img; }
+    if (jsonFxOff()) { this._fxJsonLastError = 'DSH_WE_NO_FXJSON=1 (A/B 对照, 数据驱动通路关闭)'; return img; }
     const total = img.width * img.height;
     if (!this.staticFrame && total > MAX_JSON_GLSL_PIXELS) {
       const s = Math.sqrt(MAX_JSON_GLSL_PIXELS / total);

@@ -10,7 +10,8 @@ import { runtimeObject, DISCARD } from './runtime.js';
 
 // A/B 开关 (issue #2): 关掉"顶点没写 v_TexCoord 时用全屏 quad 角点播种"的兜底, 回到
 // 接线前行为 —— 用于**同一会话内**量出该兜底修好了什么 (跨会话的机器负载不同, 不可比)。
-const NO_SEED_TEXCOORD = process.env.DSH_WE_NO_SEED_VTEXCOORD === '1';
+// **每次调用读取**（非模块加载期），便于宿主/WebUI 逐请求切换。
+const noSeedTexCoord = () => process.env.DSH_WE_NO_SEED_VTEXCOORD === '1';
 
 // vec 类型 → 分量数。**必须声明在所有使用点之前**：`seedTexCoord`/`renderGlsl` 都在
 // 模块顶层函数里引用它，而 const 有 TDZ —— 若声明晚于这些函数体所在位置，调用时会抛
@@ -334,7 +335,7 @@ export function renderGlsl(compiled, { width, height, u, sampler }) {
       // 又踩到另一头: 顶端已算好的角点被这次播种**整个覆盖** ⇒ 顶点程序形同虚设。
       // 正确判据 = **顶点侧有没有写**: 写了就一律不碰 (顶点是权威), 没写才补默认值。
       for (const vn of compiled.varyings) {
-        if (NO_SEED_TEXCOORD || vn.arrayLen || vn.name !== 'v_TexCoord') continue;
+        if (noSeedTexCoord() || vn.arrayLen || vn.name !== 'v_TexCoord') continue;
         if (vertWritesVarying(compiled.vertCode, 'v_TexCoord')) continue;
         __v[vn.name].set(seedTexCoord(vn, c));
       }
@@ -350,7 +351,7 @@ export function renderGlsl(compiled, { width, height, u, sampler }) {
   // 抛 "Cannot read properties of undefined (reading '0')" ⇒ 整个 pass 失败。
   // 同上：只补"顶点侧没写"的那些 (有顶点程序且它写了 v_TexCoord 时 cornerVals 已有值)。
   for (const vn of compiled.varyings) {
-    if (NO_SEED_TEXCOORD || vn.arrayLen || vn.name !== 'v_TexCoord') continue;
+    if (noSeedTexCoord() || vn.arrayLen || vn.name !== 'v_TexCoord') continue;
     if (cornerVals[vn.name]) continue;
     if (compiled.vertCode && vertWritesVarying(compiled.vertCode, 'v_TexCoord')) continue;
     cornerVals[vn.name] = corners.map((c) => Float32Array.from(seedTexCoord(vn, c)));

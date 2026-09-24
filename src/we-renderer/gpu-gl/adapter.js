@@ -34,10 +34,11 @@ import { comboStr, summarizeRgba } from '../effects/effectjson.js';
 
 // 逐 pass 取证开关 (与 effectjson.js 同约定): GPU 多 pass 同样把"各槽位绑到哪个 RT +
 // 实际编译源签名"记到 passTrace, 由 onPass 打成 FX-DUMP(GPU) 行, 供逐 pass 并排对照。
-const DUMP_FX = process.env.DSH_WE_FX_DUMP === '1';
+// **每次调用读取**（非模块加载期），便于宿主/WebUI 逐请求切换。
+const dumpFxOn = () => process.env.DSH_WE_FX_DUMP === '1';
 // A/B 开关: 关掉"数据通路多 pass 走 GPU"(issue #4① 的接线), 回到接线前行为 —— 用于
 // **同一会话内**测出该接线的净收益 (跨会话的绝对耗时会受机器负载影响, 不可比)。
-const JSON_GPU_OFF = process.env.DSH_WE_NO_FXJSON_GPU === '1';
+const jsonGpuOff = () => process.env.DSH_WE_NO_FXJSON_GPU === '1';
 
 // ── 后端状态 (进程内) ────────────────────────────────────────────────────────
 // unknown: 未探测; ok: 可用; off: 已判定不可用 (不再尝试)
@@ -239,7 +240,7 @@ export function installGpuAdapter(proto) {
    * @param {string} name 效果名 (effects/<name>)
    */
   proto._tryEffectJsonGpu = function (def, ef, img, t, name) {
-    if (JSON_GPU_OFF) return null;
+    if (jsonGpuOff()) return null;
     if (!this._getGpuBackend()) return null;
     if (!img || !img.width || !img.height || !img.rgba) return null;
     if (!def || !def.passes || !def.passes.length) return null;
@@ -277,7 +278,7 @@ export function installGpuAdapter(proto) {
     const usedPasses = new Set();
     // 逐 pass 取证缓冲 (DSH_WE_FX_DUMP=1): GPU 版同样把"target/尺寸/各槽位绑到哪个 RT/
     // 编译源签名/像素摘要"记下来 —— 与 CPU 侧的 FX-DUMP 行并排才能判定两侧是否逐 pass 一致。
-    const passTrace = DUMP_FX ? [] : null;
+    const passTrace = dumpFxOn() ? [] : null;
     const passShader = (materialPath) => {
       let p = byFragRel.get(materialPath);
       if (!p) p = def.passes.find((q) => q.material === materialPath && !usedPasses.has(q.index));
@@ -298,7 +299,7 @@ export function installGpuAdapter(proto) {
       const constants = Object.assign({}, defP.materialConstants || {}, sceneP.constantshadervalues || {});
       const texInfo = this._fxJsonTextures(def, ef, idx);
       // 诊断取证 (DSH_WE_FX_DUMP=1): 与 CPU 路径同一批字段, 便于逐 pass 并排对照
-      if (DUMP_FX) {
+      if (dumpFxOn()) {
         const binds = textures.map((tx, k) => {
           const ref = texInfo.refs[k];
           const nm = ref === 'previous' ? 'previous' : (ref == null ? '-' : String(ref).slice(0, 28));
@@ -366,7 +367,7 @@ export function installGpuAdapter(proto) {
         return { ...p, bind };
       });
       const gpuEf = { fbos: def.json.fbos || [], passes: gpuPasses };
-      const onPass = DUMP_FX
+      const onPass = dumpFxOn()
         ? (pass, out, ctx) => {
           // 逐 pass 取证: 与 effectjson.js 的 'FX-DUMP <name> passN → target …' 同一字段顺序,
           // 前缀改 FX-DUMP(GPU) 便于两侧并排 diff。

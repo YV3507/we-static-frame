@@ -58,9 +58,10 @@ const KERNEL_FX = new Set(['waterwaves', 'waterflow', 'foliagesway', 'skew', 'ir
   'tint', 'pulse', 'filmgrain', 'godrays', 'texture_override', 'glitter', 'opacity', 'blur',
   'depthparallax', 'watercaustics', 'blend']);
 // 链式执行自检 (默认关): 额外跑一遍"逐效果单独走 GPU"并逐位对比, 生产零开销。
-const CHAIN_VERIFY = process.env.DSH_WE_CHAIN_VERIFY === '1';
+// 本节几个开关统一**每次调用读取**（非模块加载期），便于宿主/WebUI 逐请求切换。
+const chainVerifyOn = () => process.env.DSH_WE_CHAIN_VERIFY === '1';
 // A/B 开关: 关掉链式执行做对照
-const CHAIN_OFF = process.env.DSH_WE_NO_FX_CHAIN === '1';
+const chainOff = () => process.env.DSH_WE_NO_FX_CHAIN === '1';
 
 const allFx = Object.assign({}, fxGodrays, fxScroll, fxTint, fxPulse, fxFilmgrain, fxOpacity, fxSkew, fxIris, fxLightshafts, fxCloudmotion, fxShimmer, fxBlurradial, fxBlur, fxDepthParallax, fxWaterCaustics, fxBlend, fxGlitter, fxClouds, fxSwing, fxWaterflow, fxFoliageSway, fxWaterwaves, fxWaterripple, fxShake, fxTextureOverride);
 
@@ -71,7 +72,7 @@ const LIVE_FX_RE = /audio|bars|oscilloscope|visualizer|equalizer|spectrum/i;
 
 // 诊断/性能下界开关 (DSH_WE_NO_FX=1): 效果链整体短路, 量"完全不启用效果计算"的
 // 成本与画面 —— 用于评估"UI 开关切到主纹理/无效果快速模式"的收益。默认关闭。
-const NO_FX = process.env.DSH_WE_NO_FX === '1';
+const noFxOn = () => process.env.DSH_WE_NO_FX === '1';
 
 // 效果链"是否真的产出了内容"的判据 (仅 instanced 纯色层调用方索取, 见 image.js
 // _renderSolidLayer): 输出与输入**逐字节不同**才算该效果真正塑形 (尺寸变化视为不同)。
@@ -123,8 +124,8 @@ export function installEffects(proto) {
     applyEffects(o, tex, t, status) {
       // 诊断下界 (DSH_WE_NO_FX=1): 完全不跑效果链。仍调 _retainComposite —— RT 合成层
       // 依赖它, 跳过会让引用该层的其它层取不到内容 (属合成语义, 不是效果)。
-      if (NO_FX) { this._retainComposite(o, tex); return tex; }
-      if (!profileEnabled) return this._applyEffectsImpl(o, tex, t, status);
+      if (noFxOn()) { this._retainComposite(o, tex); return tex; }
+      if (!profileEnabled()) return this._applyEffectsImpl(o, tex, t, status);
       const __t = performance.now();
       try {
         return this._applyEffectsImpl(o, tex, t, status);
@@ -166,9 +167,9 @@ export function installEffects(proto) {
           const pass = passes[0] || {};
           const c = pass.constantshadervalues || {};
           const combos = pass.combos || {};
-          const __te = profileEnabled ? performance.now() : 0;
+          const __te = profileEnabled() ? performance.now() : 0;
           // 成本主因: 效果内核逐像素跑在**输入纹理**上 (与输出画布分辨率无关)
-          if (profileEnabled && img && img.width && img.height) profPx(name, img.width * img.height);
+          if (profileEnabled() && img && img.width && img.height) profPx(name, img.width * img.height);
           const __before = img; // 退化保护基准 (见下方 catch 之后的检测)
           // P0-6 泄漏修复: 本效果从 scratch 池借出的缓冲全部登记, 抛错时统一归还
           // (blur/godrays/glitter 等 24 个内核只在正常路径 scratchPut, 中途抛错
@@ -184,7 +185,7 @@ export function installEffects(proto) {
             // 只串白名单里**实测过**的效果; 任何一步不满足就退回下面的逐效果路径。
             // ★ `_tryEffectGpu` 一行未改 (见 adapter.js 的说明)。
             let gpuImg = null;
-            if (!CHAIN_OFF && !_forcedCpu && _gpuOk && this._tryEffectChainGpu && GPU_CHAIN_EFFECTS.has(name)) {
+            if (!chainOff() && !_forcedCpu && _gpuOk && this._tryEffectChainGpu && GPU_CHAIN_EFFECTS.has(name)) {
               const run = [{ ef, name, c, pass, t }];
               for (let j = ei + 1; j < fxArr.length && run.length < GPU_CHAIN_MAX; j++) {
                 const e2 = fxArr[j];
@@ -199,7 +200,7 @@ export function installEffects(proto) {
                 if (chained) {
                   gpuImg = chained;
                   chainSkip = run.length - 1;
-                  if (CHAIN_VERIFY) this._verifyChain(img, run, chained);
+                  if (chainVerifyOn()) this._verifyChain(img, run, chained);
                 }
               }
             }
@@ -345,7 +346,7 @@ export function installEffects(proto) {
           } finally {
             scratchScopeEnd(__scope);
             // 覆盖成功/抛错两条路径 (与上方 catch 同一 finally)
-            if (profileEnabled) profAdd('效果:' + name, performance.now() - __te);
+            if (profileEnabled()) profAdd('效果:' + name, performance.now() - __te);
           }
           // ── 退化保护 (fail-safe): 效果抛错/输出垃圾时**不要替换图层**, 保留原图 ——
           // 这样至少贴图本身还在 (组件可见), 而不是整层消失或整幅报废。

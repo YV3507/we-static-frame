@@ -6,10 +6,9 @@
 // 说明: 纯观测代码, 不改变任何渲染语义与输出像素; 未开启时 profTime 直接透传。
 //
 // 输出: 由调用方 (如 scripts/profile-scene.mjs) 调 profFormat() 取文本表格。
-const enabled = process.env.DSH_WE_PROFILE === '1';
-
-/** 是否开启剖析 (热路径可用于跳过额外记账) */
-export const profileEnabled = enabled;
+// 每次调用读取（非模块加载期）：宿主/WebUI 需要能在运行中途开关剖析。
+// 调用方一律**当函数用**（`profileEnabled()`），不要缓存成布尔。
+export function profileEnabled() { return process.env.DSH_WE_PROFILE === '1'; }
 
 const acc = new Map(); // key → { ms, n }
 const pxAcc = new Map(); // key → { px, n } — 效果输入像素数 (成本主因, 与输出分辨率无关)
@@ -23,7 +22,7 @@ function add(key, ms) {
 
 /** 记一笔耗时 (key 见下方分组前缀约定) */
 export function profAdd(key, ms) {
-  if (enabled) add(key, ms);
+  if (profileEnabled()) add(key, ms);
 }
 
 /**
@@ -32,7 +31,7 @@ export function profAdd(key, ms) {
  * (同一场景 960x540 与 3840x2160 的效果耗时几乎相同) —— 故纹理侧降采样才是提速杠杆。
  */
 export function profPx(key, px) {
-  if (!enabled) return;
+  if (!profileEnabled()) return;
   let e = pxAcc.get(key);
   if (!e) { e = { px: 0, n: 0 }; pxAcc.set(key, e); }
   e.px += px;
@@ -44,7 +43,7 @@ export function profPx(key, px) {
  * 允许嵌套 (如 对象明细 → 对象类型 → 纹理/效果链), 嵌套项在报告中分组展示以免误读。
  */
 export function profTime(key, fn) {
-  if (!enabled) return fn();
+  if (!profileEnabled()) return fn();
   const t0 = performance.now();
   try {
     return fn();

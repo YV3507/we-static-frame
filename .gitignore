@@ -3,6 +3,9 @@ out/
 *.log
 .test-tmp/
 
+# WebUI 上传落盘目录（serve.mjs 会建）
+webui/tmp/
+
 # 本地 npm 缓存托管目录（CI / 沙箱里用 --cache 指定）
 .npm-cache*/
 

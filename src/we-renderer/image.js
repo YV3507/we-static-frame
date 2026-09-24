@@ -155,10 +155,10 @@ export function installImage(proto) {
           pass && pass.combos && (pass.combos.spritesheet || pass.combos.SPRITESHEET) &&
           shaderName !== 'swayimage' && shaderName !== 'flag' && shaderName !== 'retro'
             ? t : null;
-        const __tTex = profileEnabled ? performance.now() : 0;
+        const __tTex = profileEnabled() ? performance.now() : 0;
         let tex = this.loadModelTexture(o.image, atlasTime != null ? { time: atlasTime } : undefined);
         // §三十三 取证: 取纹理 (含帧解码/缓存命中) 的耗时 —— n 列即为调用次数
-        if (profileEnabled) profAdd('对象内部:取纹理', performance.now() - __tTex);
+        if (profileEnabled()) profAdd('对象内部:取纹理', performance.now() - __tTex);
         if (!tex) {
           this.log('跳过 image ' + (o.name || o.id) + ': 无纹理');
           // 同样要进 degraded 通道: 主图层无纹理 = 整帧空白, 此前只有 log 可见。
@@ -249,7 +249,7 @@ export function installImage(proto) {
         else if (align.includes('right')) dx -= dw / 2;
         // §三十九 前提取证: 记录每个纹理"已解码像素 vs 本帧实际绘制像素"。
         // 比值 > 1 才说明存在过采样 ⇒ "按绘制尺寸解码"才有目标。
-        if (profileEnabled && tex && tex.width && o.image) {
+        if (profileEnabled() && tex && tex.width && o.image) {
           const m = this._drawArea || (this._drawArea = new Map());
           const prev = m.get(o.image) || { texPx: 0, drawnPx: 0 };
           prev.texPx = tex.width * tex.height;

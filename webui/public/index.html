@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>we-static-frame · WebUI</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▣</span>
+    <div>
+      <div class="title">we-static-frame <span class="dim">WebUI</span></div>
+      <div class="sub" id="envLine">环境自检中…</div>
+    </div>
+  </div>
+  <div class="topActions">
+    <span id="renderState" class="state idle">空闲</span>
+    <button id="btnRender" class="primary">渲染 (R)</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- ── 左：导入壁纸 ───────────────────────────────────────────── -->
+  <section class="panel sources">
+    <h2>1 · 导入壁纸</h2>
+
+    <div class="drop" id="drop">
+      <strong>拖拽进来</strong>
+      <span>scene.pkg / 场景目录里的文件（可多选、可拖整个目录）</span>
+      <input type="file" id="fileInput" multiple hidden>
+      <input type="file" id="dirInput" webkitdirectory directory multiple hidden>
+      <div class="dropBtns">
+        <button id="btnPickFiles">选择文件</button>
+        <button id="btnPickDir">选择目录</button>
+      </div>
+      <div id="uploadState" class="dim small"></div>
+    </div>
+
+    <div class="row">
+      <input id="pathInput" type="text" placeholder="或直接填路径：…/scene.pkg 或场景目录">
+      <button id="btnUsePath">用这个路径</button>
+    </div>
+
+    <div class="listHead">
+      <span>本机场景 <b id="sceneCount">0</b></span>
+      <button id="btnReloadScenes" class="link">重新扫描</button>
+    </div>
+    <div id="sceneList" class="sceneList"></div>
+
+    <div id="uploadListWrap" class="uploads hidden">
+      <div class="listHead"><span>已上传</span><button id="btnClearUploads" class="link">清空</button></div>
+      <div id="uploadList" class="sceneList small"></div>
+    </div>
+  </section>
+
+  <!-- ── 中：配置 ──────────────────────────────────────────────── -->
+  <section class="panel config">
+    <h2>2 · 配置</h2>
+    <nav class="tabs" id="tabs">
+      <button data-tab="render" class="active">渲染</button>
+      <button data-tab="gpu">GPU / 策略</button>
+      <button data-tab="chain">效果链</button>
+      <button data-tab="debug">诊断取证</button>
+      <button data-tab="patch">着色器补丁</button>
+    </nav>
+
+    <div class="tabBody">
+      <!-- 渲染参数 -->
+      <div class="tab" data-tab="render">
+        <div class="grid2">
+          <label>宽度 <input type="number" id="width" value="960" min="16" max="7680" step="2"></label>
+          <label>高度 <input type="number" id="height" value="540" min="16" max="4320" step="2"></label>
+        </div>
+        <div class="presets" id="resPresets">
+          <button data-w="320" data-h="180">320×180</button>
+          <button data-w="480" data-h="270">480×270</button>
+          <button data-w="960" data-h="540" class="active">960×540</button>
+          <button data-w="1920" data-h="1080">1920×1080</button>
+          <button data-w="3840" data-h="2160">3840×2160</button>
+        </div>
+        <label>时间 t（秒） <input type="number" id="time" value="2.5" step="0.1"></label>
+        <div class="presets" id="timePresets">
+          <button data-t="0">0</button><button data-t="1">1</button>
+          <button data-t="2.5" class="active">2.5</button>
+          <button data-t="5">5</button><button data-t="10">10</button>
+        </div>
+        <label class="check"><input type="checkbox" id="warm" checked> 纹理预解码预热（warm）</label>
+        <label class="check"><input type="checkbox" id="gpuAccel"> 启用 GPU 通道（gpuAccel）</label>
+        <label>WE assets 目录 <input type="text" id="weAssets" placeholder="留空 = 自动定位"></label>
+        <label>videoFrames（可选，JSON） <textarea id="videoFrames" rows="2" placeholder='{"materials/x.tex":"/abs/frame.png"}'></textarea></label>
+      </div>
+
+      <!-- GPU / 策略 -->
+      <div class="tab" data-tab="gpu">
+        <label>gpu 模式
+          <select id="gpuMode">
+            <option value="">（不指定，跟随 gpuAccel）</option>
+            <option value="auto">auto</option>
+            <option value="off">off</option>
+            <option value="force">force</option>
+          </select>
+        </label>
+        <label>failStreakLimit（熔断阈值；0 = 永不熔断）
+          <input type="number" id="failStreak" placeholder="默认 3" min="0">
+        </label>
+        <label class="check"><input type="checkbox" id="gpuPolicyObj"> 以对象形式传 gpu（含 allow/deny 效果名单）</label>
+        <div class="grid2">
+          <label>effects.allow（逗号分隔） <input type="text" id="fxAllow" placeholder="waterwaves,opacity"></label>
+          <label>effects.deny（逗号分隔） <input type="text" id="fxDeny" placeholder="bloom,filmgrain"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="skipDegenerate" checked> skipDegenerate（关掉则保留退化输出，便于取证）</label>
+        <label>统一后端 <select id="backendAll">
+          <option value="">（不指定）</option>
+          <option value="auto">auto</option>
+          <option value="cpu">cpu（强制 CPU）</option>
+          <option value="gpu">gpu</option>
+          <option value="gpu-only">gpu-only（做不了就跳过）</option>
+        </select>
+        </label>
+        <div class="hint">`gpu-only` 是严格对拍模式：GPU 做不了的效果会被跳过并记进决策表（不静默回退 CPU）。</div>
+      </div>
+
+      <!-- 效果链逐条开关 -->
+      <div class="tab" data-tab="chain">
+        <div class="chainHead">
+          <span id="chainSummary" class="dim">先选一个场景</span>
+          <span>
+            <button id="btnAllOn" class="link">全开</button>
+            <button id="btnAllOff" class="link">全关效果</button>
+          </span>
+        </div>
+        <div id="chainTree" class="chainTree"><div class="dim small">选中场景后自动列出对象与效果。</div></div>
+        <div class="hint">逐对象 = 数据层 `object.visible`；逐效果 = 数据层 `effect.visible`（比 allow/deny 名单更精确：同一图层里同名效果也能分别控制）。勾选状态会在渲染时写进临时 scene.json。</div>
+      </div>
+
+      <!-- 诊断 -->
+      <div class="tab" data-tab="debug">
+        <div class="hint">这些开关对应渲染器内部的 `DSH_WE_*` 环境变量；每次渲染都会起一个干净的子进程按需注入，因此可以逐次切换。</div>
+        <div id="debugList" class="debugList"></div>
+      </div>
+
+      <!-- 着色器补丁 -->
+      <div class="tab" data-tab="patch">
+        <div class="hint">对应 renderFrame 的 `shaderPatch`：key = 效果名/着色器 stem，用正则把源码里的 from 换成 to。
+          常用做法：把某个 pass 的采样换成直通，判断问题在输入侧还是该 pass 自身。</div>
+        <div id="patchList"></div>
+        <button id="btnAddPatch" class="link">+ 增加一条</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 右：结果 ──────────────────────────────────────────────── -->
+  <section class="panel result">
+    <h2>3 · 渲染结果</h2>
+    <div class="resultMeta" id="resultMeta"><span class="dim">尚未渲染</span></div>
+    <div class="canvasWrap" id="canvasWrap">
+      <img id="preview" alt="渲染结果">
+      <div id="placeholder" class="placeholder">选择左侧场景 → 点「渲染」</div>
+    </div>
+    <div class="resultTabs">
+      <button data-rtab="degraded" class="active">降级 <span id="cntDegraded">0</span></button>
+      <button data-rtab="decisions">决策 <span id="cntDecisions">0</span></button>
+      <button data-rtab="gpu">GPU</button>
+      <button data-rtab="logs">日志 <span id="cntLogs">0</span></button>
+    </div>
+    <div class="rtabBody">
+      <div class="rtab active" data-rtab="degraded"><div id="degradedList" class="kvlist dim">—</div></div>
+      <div class="rtab" data-rtab="decisions"><div id="decisionsTable" class="kvlist dim">—</div></div>
+      <div class="rtab" data-rtab="gpu"><pre id="gpuBox" class="dim">—</pre></div>
+      <div class="rtab" data-rtab="logs"><pre id="logBox" class="dim">—</pre></div>
+    </div>
+    <div class="resultActions">
+      <button id="btnDownload" disabled>下载 PNG</button>
+      <span id="lastMs" class="dim"></span>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
