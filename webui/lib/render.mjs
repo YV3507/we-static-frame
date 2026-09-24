@@ -56,6 +56,13 @@ export function buildShaderPatch(specs) {
   return Object.keys(patch).length ? patch : null;
 }
 
+/** 本次请求是否需要用数据层改写 scene.json（逐对象/逐效果勾选）。 */
+export function needsVisibilityRewrite(job) {
+  const n = Array.isArray(job.hideObjects) ? job.hideObjects.length : 0;
+  const m = Array.isArray(job.hideEffects) ? job.hideEffects.length : 0;
+  return !!(n || m);
+}
+
 /**
  * 按"逐对象 / 逐效果"开关改写场景 JSON。
  *
@@ -84,8 +91,8 @@ export function applyVisibilityOverrides(input, job) {
   catch { dir = dirname(input); }
   const scenePath = join(dir, 'scene.json');
   if (!existsSync(scenePath)) {
-    // scene.pkg 形态: 场景 JSON 在 PKG 容器内（且条目是 LZ4 块链），本层不改写压缩包。
-    // 明确报错而不是静默忽略 —— 静默会让 UI 的勾选看起来"没生效"。
+    // 走到这里说明上层没做前置解包（见 runJob 的 ensureUnpacked）。明确报错而不是静默
+    // 忽略 —— 静默会让 UI 的勾选看起来"没生效"。
     const e = new Error('逐对象/逐效果开关需要**松散场景目录**（可直接改写 scene.json）；'
       + 'scene.pkg 的场景 JSON 在 PKG 容器内。可先用「解包」把 pkg 落成目录再勾选。');
     e.code = 'NEEDS_DIR';
@@ -177,17 +184,38 @@ export async function runJob(job) {
   const t0 = Date.now();
   const normalized = normalizeSceneInput(job.input);
   if (!normalized) throw new Error('场景不存在: ' + job.input);
-  const vis = applyVisibilityOverrides(normalized, job);
-  const opts = buildRenderOpts(job);
   // 场景稳定标识: 让"同一场景的副本"（上传副本 / 解包目录）与原 pkg 跑出逐像素一致的结果
   // —— 粒子系统的确定性 RNG 以它为种子（we-renderer/particles.js::_particleRng）。
-  if (!opts.sceneKey) {
-    const { deriveSceneKey } = await import('./unpack.mjs');
-    opts.sceneKey = deriveSceneKey(normalized);
+  const sceneKey = job.sceneKey || (await import('./unpack.mjs')).deriveSceneKey(normalized);
+  // ── 逐对象/逐效果开关: 需要**松散场景目录**（数据层要改写 scene.json）──────────
+  // 传入的是 scene.pkg 时**自动解包一次**再渲染，而不是把"请先解包"甩给用户 ——
+  // 用户的预期是"任何场景都能直接取消勾选"，多一步手动解包纯属摩擦。
+  // 解包产物按 sceneKey 落在 webui/tmp/unpacked/<id>/，二次渲染直接复用（有旁挂校验）。
+  let input = normalized;
+  let autoUnpacked = null;
+  if (needsVisibilityRewrite(job)) {
+    const { ensureUnpacked } = await import('./unpack.mjs');
+    const up = ensureUnpacked(normalized, sceneKey);
+    if (up && up.input) { input = up.input; autoUnpacked = up.unpacked ? up.input : null; }
+    else if (up && up.error) {
+      const e = new Error(up.error);
+      e.code = 'NEEDS_DIR';
+      throw e;
+    }
   }
+  const vis = applyVisibilityOverrides(input, job);
+  const opts = buildRenderOpts(job);
+  opts.sceneKey = sceneKey;
   if (!opts.weAssetsDir) {
     const { locateWeAssets } = await import('../../src/render.js');
     opts.weAssetsDir = locateWeAssets();
+  }
+  if (process.env.WEBUI_DBG_OVERRIDE === '1') {
+    let st = 'n/a';
+    try { st = statSync(vis.input).isDirectory() ? 'dir' : 'file'; } catch (e) { st = 'stat-err:' + e.code; }
+    process.stderr.write('[job] raw=' + JSON.stringify(job.input) + ' normalized=' + JSON.stringify(normalized)
+      + ' used=' + JSON.stringify(vis.input) + ' (' + st + ') hides=' + (job.hideObjects || []).length + '/' + (job.hideEffects || []).length
+      + ' autoUnpacked=' + JSON.stringify(autoUnpacked) + '\n');
   }
   // GPU 熔断状态是**进程级**的（见 gpu-gl/adapter.js）。WebUI 常在同一进程里连渲染多个场景，
   // 一次失败就可能让后续请求全部"状态=off"。`gpu:'force'` 的语义本就是"重新探测"，这里显式
@@ -213,6 +241,9 @@ export async function runJob(job) {
     degraded: res.degraded || [],
     decisions: res.decisions || { total: 0, items: [] },
     gpuStats: res.gpuStats || null,
+    // 逐对象/逐效果开关是否触发了自动解包（UI 据此提示"已自动解包到 …"）
+    autoUnpacked: autoUnpacked || null,
+    sceneKey,
     effective: { effects: opts.effects || null, gpu: opts.gpu || null, policy: !!opts.policy, shaderPatchKeys: opts.shaderPatch ? Object.keys(opts.shaderPatch) : [] },
   };
 }

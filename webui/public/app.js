@@ -139,7 +139,8 @@ async function doRender() {
     const deg = (r.degraded || []).length;
     setState({
       status: 'ok',
-      statusText: '完成 ' + r.ms + 'ms' + (r.blank ? ' · 空白帧' : '') + (deg ? ' · 降级 ' + deg : ''),
+      statusText: '完成 ' + r.ms + 'ms' + (r.blank ? ' · 空白帧' : '') + (deg ? ' · 降级 ' + deg : '')
+        + (r.autoUnpacked ? ' · 已自动解包' : ''),
     });
   } catch (e) {
     if (seq !== renderSeq) return;
@@ -242,30 +243,18 @@ function renderSceneList(s) {
   box.replaceChildren(...nodes);
 }
 
-/** 效果链面板顶部的「这需要解包」提示条。 */
+/** 效果链面板顶部的提示条：说明 pkg 会被**自动解包**（无需用户手动点）。 */
 function renderUnpackBar(s) {
   const bar = $('#unpackBar');
   const sc = (s.scenes || []).find((x) => x.pkg === s.selected);
   if (!sc) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
   if (sc.unpackedDir) {
-    bar.classList.remove('hidden');
-    bar.textContent = '✓ 已解包（' + sc.unpackedDir + '）—— 逐对象/逐效果开关可用。';
+    bar.textContent = '✓ 已解包（' + sc.unpackedDir + '）—— 逐对象/逐效果开关直接可用。';
     return;
   }
-  bar.classList.remove('hidden');
-  bar.replaceChildren();
-  bar.append(document.createTextNode('scene.pkg 里的 scene.json 封在 PKG 容器内，逐对象/逐效果开关需要先解包： '));
-  const b = el('button', 'link', '解包这个场景');
-  b.onclick = async () => {
-    b.textContent = '解包中…'; b.disabled = true;
-    try {
-      const r = await postJson('/api/unpack', { input: sc.pkg });
-      if (!r.ok) { b.textContent = '解包失败: ' + (r.error || ''); return; }
-      await loadScenes();
-      selectScene(r.input);
-    } catch (e) { b.textContent = '解包失败: ' + String(e.message || e); }
-  };
-  bar.append(b);
+  bar.textContent = '这是 scene.pkg：勾选/取消时会**自动解包一次**（约 0.1–0.6 秒）再渲染，'
+    + '之后复用该解包产物。不需要手动操作。';
 }
 
 function renderUploads(s) {
@@ -372,6 +361,7 @@ function renderResult(s) {
     pills.push(el('span', 'pill' + (r.blank ? ' warn' : ' ok'), r.blank ? '空白帧' : 'mean ' + r.meanLuma));
     const deg = (r.degraded || []).length;
     pills.push(el('span', 'pill' + (deg ? ' warn' : ' ok'), '降级 ' + deg));
+    if (r.autoUnpacked) pills.push(el('span', 'pill', '已自动解包'));
     $('#resultMeta').replaceChildren(...pills);
     img.src = 'data:image/png;base64,' + r.png;
     img.classList.add('show'); $('#placeholder').style.display = 'none';

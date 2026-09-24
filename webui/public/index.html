@@ -135,7 +135,7 @@
         <div id="chainTree" class="chainTree"><div class="dim small">选中场景后自动列出对象与效果。</div></div>
         <div class="hint">逐对象 = 数据层 <code>object.visible</code>；逐效果 = 数据层 <code>effect.visible</code>
           （比 allow/deny 名单更精确：同一图层里同名效果也能分别控制）。渲染时会写一份临时 scene.json。
-          <br>⚠ 这两条走数据层，所以需要**松散场景目录** —— pkg 请先点上面的「解包」。</div>
+          <br>scene.pkg 会在勾选/取消时**自动解包一次**（约 0.1–0.6 秒）再改写，无需手动操作。</div>
       </div>
 
       <!-- 诊断 -->

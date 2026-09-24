@@ -164,3 +164,57 @@ export function findSceneEntry(dir) {
   } catch { /* ignore */ }
   return null;
 }
+
+/** 解包产物的统一落点（与 serve.mjs 的上传目录同根）。 */
+export function unpackedDirFor(key) {
+  const safe = String(key || 'scene').replace(/[^\w.-]+/g, '_').slice(0, 80);
+  return join(WEBUI_DIR, 'tmp', 'unpacked', safe);
+}
+
+/**
+ * **确保拿到可改写的场景目录** —— 逐对象/逐效果开关的前置步骤。
+ *
+ * 入参是松散目录 → 原样返回；是 scene.pkg → 解包到 `tmp/unpacked/<key>/` 再返回该目录。
+ * 已有解包产物时直接复用（用旁挂的 `sceneKey` 与体积粗校验，不一致就重解）。
+ *
+ * 为什么要自动做: "取消勾选一个效果"是**最常用**的操作，而 pkg 是**最常见**的输入形态；
+ * 把"请先手动解包"甩给用户等于每个场景都要多点一次。解包只要 100–600ms，直接做掉。
+ *
+ * @returns {{input:string|null, unpacked:boolean, done:boolean, error?:string, sceneKey?:string}}
+ */
+export function ensureUnpacked(input, sceneKey) {
+  const p = resolve(String(input));
+  let isDir = false;
+  try { isDir = statSync(p).isDirectory(); } catch { /* ignore */ }
+  if (isDir) {
+    // 松散/已解包目录：能直接改写就用它
+    if (findSceneEntry(p)) return { input: p, unpacked: false, done: false };
+    return { input: null, unpacked: false, done: false, error: '目录里找不到 scene.json: ' + p };
+  }
+  if (!/\.pkg$/i.test(p)) {
+    // 其它文件（比如直接指向某个 .json）—— 交给上层按"同级目录"处理
+    return { input: p, unpacked: false, done: false };
+  }
+
+  const key = sceneKey || deriveSceneKey(p) || ('pkg-' + hashPath(p));
+  const out = unpackedDirFor(key);
+  // 复用已有解包：旁挂的 sceneKey 一致且入口还在
+  const prev = readSidecar(out);
+  const entry = existsSync(out) ? findSceneEntry(out) : null;
+  if (entry && prev && prev.sceneKey === key) {
+    return { input: entry, unpacked: true, done: false, sceneKey: key };
+  }
+  try {
+    const r = unpackPkg(p, out, { sceneKey: key });
+    const e2 = findSceneEntry(out);
+    if (!e2) return { input: null, unpacked: true, done: true, error: '解包完成但没有 scene.json: ' + out };
+    return { input: e2, unpacked: true, done: true, sceneKey: r.sceneKey };
+  } catch (e) {
+    return { input: null, unpacked: true, done: false, error: '自动解包失败: ' + (e && e.message ? e.message : e) };
+  }
+}
+
+/** 路径哈希（外部目录没有 workshop id 时兜底当解包目录名）。 */
+function hashPath(p) {
+  return createHash('sha256').update(String(p)).digest('hex').slice(0, 12);
+}
