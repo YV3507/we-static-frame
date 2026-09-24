@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path';
 import { normalizeWeAssetsDir } from '../src/scene-renderer.js';
 import { applySceneScripts, createScriptCache } from '../src/scene-scripts.js';
 import { renderFrame, sampleFrame, locateWeAssets, steamRootCandidates } from '../src/render.js';
-import { renameReservedSample } from '../src/we-renderer/glsl/preprocess.js';
+import { renameReservedSample, balanceConditionals } from '../src/we-renderer/glsl/preprocess.js';
 import { compileGlsl } from '../src/we-renderer/glsl/executor.js';
 
 const cases = [];
@@ -180,6 +180,27 @@ test('steamRootCandidates: 非空、去重、环境变量优先', () => {
   } finally {
     if (prev === undefined) delete process.env.DSH_WE_STEAM_ROOT; else process.env.DSH_WE_STEAM_ROOT = prev;
   }
+});
+
+// ── P1: 条件编译指令配平（issue #3） ──────────────────────────────────────
+// 回归背景：3582367840 的 vert 多了一个 #endif（展开后第 109 行），shaderfrog
+// 预处理器因此整条报 "Expected control line … but '#' found"，效果被丢弃；
+// 而 WE 自带编译器容忍这种写法。
+test('balanceConditionals: 多余的 #endif 被丢弃', () => {
+  const src = '#if A\nx\n#endif\n#endif\n';
+  const out = balanceConditionals(src, () => {});
+  assert.equal((out.match(/#endif/g) || []).length, 1, '多余 #endif 未被丢弃');
+  assert.ok(out.includes('x'));
+});
+
+test('balanceConditionals: 缺失的 #endif 在文件末尾补齐', () => {
+  const out = balanceConditionals('#if A\nx\n', () => {});
+  assert.equal((out.match(/#endif/g) || []).length, 1, '未补齐 #endif');
+});
+
+test('balanceConditionals: 源码本就配平时逐字节不变', () => {
+  const src = '#if A\n#if B\nx\n#else\ny\n#endif\n#endif\n';
+  assert.equal(balanceConditionals(src, () => {}), src, '配平源码被改动');
 });
 
 // ── runner ─────────────────────────────────────────────────────────────────

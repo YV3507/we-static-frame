@@ -127,6 +127,47 @@ export function renameReservedSample(src) {
   return out;
 }
 
+/**
+ * 条件编译指令配平 —— 真实语料里的 `#if/#endif` 并不总是配对。
+ *
+ * 实测 issue #3（场景 3582367840 的 vert）：文件里**多了一个 `#endif`**
+ * （展开后第 109 行，深度被压到 -1），shaderfrog 的预处理器直接抛
+ *   `Expected control line, end of input, or text but "#" found.  --> location:109:1`
+ * 整个效果因此被丢弃；而 WE 自带的编译器容忍这种写法（壁纸在 WE 里是正常的）。
+ *
+ * 处理方式（与"容忍"对齐，只动已经坏掉的地方）：
+ *   · 深度为 0 时出现的 `#endif` → 丢弃该行；
+ *   · 深度为 0 时出现的 `#else`/`#elif` → 丢弃该行；
+ *   · 文件结束时深度 > 0 → 补齐 `#endif`。
+ * 若源码本来就配平，本函数**逐字节不改**（等价于 no-op），并可用 onWarn 留痕。
+ */
+export function balanceConditionals(src, onWarn) {
+  const lines = String(src).split('\n');
+  const out = [];
+  let depth = 0;
+  let dropped = 0;
+  let added = 0;
+  for (const line of lines) {
+    const m = /^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b/.exec(line);
+    const kw = m ? m[1] : null;
+    if (kw === 'if' || kw === 'ifdef' || kw === 'ifndef') { depth++; out.push(line); continue; }
+    if (kw === 'endif') {
+      if (depth === 0) { dropped++; continue; }   // 多余的 #endif
+      depth--; out.push(line); continue;
+    }
+    if (kw === 'else' || kw === 'elif') {
+      if (depth === 0) { dropped++; continue; }   // 无主 #else/#elif
+      out.push(line); continue;
+    }
+    out.push(line);
+  }
+  for (let i = 0; i < depth; i++) { out.push('#endif'); added++; }
+  if ((dropped || added) && typeof onWarn === 'function') {
+    try { onWarn('条件指令配平: 丢弃 ' + dropped + ' 行、补齐 ' + added + ' 个 #endif'); } catch { /* ignore */ }
+  }
+  return dropped || added ? out.join('\n') : src;
+}
+
 // 完整预处理: include 展开 → combo defines 注入 → shaderfrog preprocess
 // P2-23: opts.meta — 调用方 (executor.compileGlsl) 已对同一源码跑过 parseMeta 时
 // 直接复用, 免此处再全文正则扫描一遍
@@ -148,6 +189,9 @@ export function preprocessShader(source, { defines = {}, resolveInclude = null, 
   for (const [k, v] of Object.entries(defines)) {
     allDefines[k] = v === undefined || v === null ? '0' : String(v);
   }
+  // 条件指令配平：真实壁纸里存在多余/缺失的 #if/#endif（WE 自带编译器容忍），
+  // 不配平会让 shaderfrog 预处理器整条报错 —— 见 balanceConditionals 注释。
+  src = balanceConditionals(src, onWarn);
   return preprocess(src, { defines: allDefines });
 }
 
