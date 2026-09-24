@@ -18,6 +18,7 @@
  */
 import { statSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { SceneRenderer, encodePng } from './scene-renderer.js';
 
 /** 目录入参 → 真实场景主文件（project.json 的 `file` 字段，回退目录本身）。 */
@@ -129,15 +130,40 @@ export async function renderToFile(input, outPath, opts = {}) {
   return { ...res, outPath };
 }
 
-/** GE 安装目录下的 assets 定位（独立实现；主插件有更完整的 Steam 库解析，见其 locateWallpaperEngineP）。 */
+/**
+ * 候选 Steam 根目录（按平台）。环境变量 `DSH_WE_STEAM_ROOT` 优先（`;`/`,` 分隔多个）。
+ *
+ * 为什么单独导出：`locateWeAssets()` 与 test/ 下的场景发现都要用它；此前三处各写一份
+ * 且**只探测 Windows 盘符**，Linux / macOS 上自动定位必然失败（现在补上默认路径）。
+ */
+export function steamRootCandidates() {
+  const roots = [];
+  const env = process.env.DSH_WE_STEAM_ROOT;
+  if (env) roots.push(...env.split(/[;,]/).map((s) => s.trim()).filter(Boolean));
+  if (process.platform === 'win32') {
+    for (const d of ['C', 'D', 'E', 'F', 'G']) {
+      roots.push(`${d}:\\SteamLibrary`, `${d}:\\Steam`, `${d}:\\Program Files (x86)\\Steam`);
+    }
+  } else if (process.platform === 'darwin') {
+    roots.push(join(homedir(), 'Library', 'Application Support', 'Steam'));
+  } else {
+    // Linux：发行版/Flatpak/Snap 的常见位置
+    roots.push(
+      join(homedir(), '.steam', 'steam'),
+      join(homedir(), '.steam', 'root'),
+      join(homedir(), '.local', 'share', 'Steam'),
+      join(homedir(), '.var', 'app', 'com.valvesoftware.Steam', '.local', 'share', 'Steam'),
+      join(homedir(), 'snap', 'steam', 'common', '.local', 'share', 'Steam'),
+    );
+  }
+  return [...new Set(roots)];
+}
+
+/** WE 安装目录下的 assets 定位（独立实现；主插件有更完整的 Steam 库解析，见其 locateWallpaperEngineP）。 */
 export function locateWeAssets() {
   const env = process.env.WE_ASSETS || process.env.DSH_WE_ASSETS;
   if (env && existsSync(join(env, 'shaders'))) return env;
-  const roots = [];
-  const steamEnv = process.env.DSH_WE_STEAM_ROOT;
-  if (steamEnv) roots.push(...steamEnv.split(/[;,]/).map((s) => s.trim()).filter(Boolean));
-  for (const d of ['C', 'D', 'E', 'F']) roots.push(`${d}:\\SteamLibrary`, `${d}:\\Steam`, `${d}:\\Program Files (x86)\\Steam`);
-  for (const r of roots) {
+  for (const r of steamRootCandidates()) {
     const p = join(r, 'steamapps', 'common', 'wallpaper_engine', 'assets');
     if (existsSync(join(p, 'shaders'))) return p;
     // libraryfolders.vdf 里的其它库
@@ -153,4 +179,4 @@ export function locateWeAssets() {
   return null;
 }
 
-export default { renderFrame, renderToFile, resolveSceneMainFile, locateWeAssets, sampleFrame };
+export default { renderFrame, renderToFile, resolveSceneMainFile, locateWeAssets, sampleFrame, steamRootCandidates };

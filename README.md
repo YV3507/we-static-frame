@@ -2,6 +2,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![CI](https://github.com/YV3507/we-static-frame/actions/workflows/ci.yml/badge.svg)](https://github.com/YV3507/we-static-frame/actions/workflows/ci.yml)
 [![Wallpaper Engine](https://img.shields.io/badge/Wallpaper%20Engine-scene.pkg-1b2838.svg)](https://www.wallpaperengine.io/)
 
 把 Wallpaper Engine 的场景壁纸（`scene.pkg` / 场景目录）**离线渲染成一张 PNG** 的独立实现。
@@ -17,8 +18,9 @@
 - **Node ≥ 18**（ESM）。
 - **Wallpaper Engine 安装**：渲染器需要官方 `assets/`（shader / material / model / particle / scripts）才能还原效果链。
   用 `--we-assets <WE 安装目录>/assets` 指定，或让 CLI 自动定位（环境变量 `WE_ASSETS` / `DSH_WE_ASSETS`、
-  `DSH_WE_STEAM_ROOT`，以及 Steam 默认库与 `libraryfolders.vdf`）。**这些资产是 WE 自带的，不随本仓库分发。**
-  ⚠ 自动定位目前只探测 **Windows** 盘符路径；Linux / macOS 请显式设置 `WE_ASSETS`。
+  `DSH_WE_STEAM_ROOT`，以及各平台 Steam 默认库 + `libraryfolders.vdf`：Windows 盘符、
+  Linux `~/.steam` / `~/.local/share/Steam` / Flatpak / snap、macOS `~/Library/Application Support/Steam`）。
+  **这些资产是 WE 自带的，不随本仓库分发。**
 - 可选：`supreium-headless-gl`（x64）—— 效果链走 WebGL 的 GPU 加速（`--gpu`）。缺失、架构不符或驱动异常即自动回退 CPU。
 - 可选：场景内嵌**视频纹理**需要调用方先抽帧（主插件用 ffmpeg），通过库参数 `videoFrames` 传入；CLI 暂不支持，
   这类场景会渲染成**空白帧**（见下方"已知限制"）。

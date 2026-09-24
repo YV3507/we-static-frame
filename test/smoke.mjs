@@ -10,15 +10,15 @@
 import { existsSync, readdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { renderToFile, locateWeAssets } from '../src/render.js';
+import { renderToFile, locateWeAssets, steamRootCandidates } from '../src/render.js';
 
 function findScene() {
   if (process.env.WE_SF_SCENE && existsSync(process.env.WE_SF_SCENE)) return process.env.WE_SF_SCENE;
   const roots = [];
   if (process.env.WE_SF_WORKSHOP_ROOT) roots.push(process.env.WE_SF_WORKSHOP_ROOT);
-  for (const d of ['C', 'D', 'E', 'F']) roots.push(`${d}:\\SteamLibrary`, `${d}:\\Steam`);
-  for (const r of roots) {
-    const base = join(r, 'steamapps', 'workshop', 'content', '431960');
+  // 跨平台候选（Windows 盘符 / Linux ~/.steam 等）集中在 render.js::steamRootCandidates
+  for (const r of steamRootCandidates()) roots.push(join(r, 'steamapps', 'workshop', 'content', '431960'));
+  for (const base of roots) {
     if (!existsSync(base)) continue;
     for (const id of readdirSync(base)) {
       const p = join(base, id, 'scene.pkg');

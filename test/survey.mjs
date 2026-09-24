@@ -21,7 +21,7 @@
 import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SceneRenderer, encodePng } from '../src/scene-renderer.js';
-import { locateWeAssets } from '../src/render.js';
+import { locateWeAssets, steamRootCandidates } from '../src/render.js';
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -43,22 +43,25 @@ for (let i = 0; i < argv.length; i++) {
   } else { process.stderr.write('未知参数: ' + a + '\n'); process.exit(2); }
 }
 
-/** 场景发现（与 smoke.mjs 同一套来源，Windows 盘符只是候选之一）。 */
+/** 场景发现（与 smoke.mjs 同一套来源；平台候选路径见 render.js::steamRootCandidates）。 */
 function findScenes() {
   const single = process.env.WE_SF_SCENE;
   if (single && existsSync(single)) return [single];
-  const roots = [];
-  if (process.env.WE_SF_WORKSHOP_ROOT) roots.push(process.env.WE_SF_WORKSHOP_ROOT);
-  for (const d of ['C', 'D', 'E', 'F', 'G']) roots.push(`${d}:\\SteamLibrary`, `${d}:\\Steam`);
+  if (process.env.WE_SF_WORKSHOP_ROOT) {
+    const base = process.env.WE_SF_WORKSHOP_ROOT;
+    if (!existsSync(base)) return [];
+    return readdirSync(base).map((id) => join(base, id, 'scene.pkg'))
+      .filter((p) => existsSync(p) && statSync(p).size > 4096);
+  }
   const out = [];
-  for (const r of roots) {
-    const base = process.env.WE_SF_WORKSHOP_ROOT ? r : join(r, 'steamapps', 'workshop', 'content', '431960');
+  for (const r of steamRootCandidates()) {
+    const base = join(r, 'steamapps', 'workshop', 'content', '431960');
     if (!existsSync(base)) continue;
     for (const id of readdirSync(base)) {
       const p = join(base, id, 'scene.pkg');
       if (existsSync(p) && statSync(p).size > 4096) out.push(p);
     }
-    if (out.length && !process.env.WE_SF_WORKSHOP_ROOT) continue; // 命中一个 Steam 库就够
+    if (out.length) break; // 命中一个 Steam 库就够
   }
   return out;
 }

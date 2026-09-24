@@ -10,7 +10,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { normalizeWeAssetsDir } from '../src/scene-renderer.js';
 import { applySceneScripts, createScriptCache } from '../src/scene-scripts.js';
-import { renderFrame, sampleFrame, locateWeAssets } from '../src/render.js';
+import { renderFrame, sampleFrame, locateWeAssets, steamRootCandidates } from '../src/render.js';
 import { renameReservedSample } from '../src/we-renderer/glsl/preprocess.js';
 import { compileGlsl } from '../src/we-renderer/glsl/executor.js';
 
@@ -22,9 +22,8 @@ function findOneScene() {
   if (process.env.WE_SF_SCENE && existsSync(process.env.WE_SF_SCENE)) return process.env.WE_SF_SCENE;
   const roots = [];
   if (process.env.WE_SF_WORKSHOP_ROOT) roots.push(process.env.WE_SF_WORKSHOP_ROOT);
-  for (const d of ['C', 'D', 'E', 'F', 'G']) roots.push(`${d}:\\SteamLibrary`, `${d}:\\Steam`);
-  for (const r of roots) {
-    const base = process.env.WE_SF_WORKSHOP_ROOT ? r : join(r, 'steamapps', 'workshop', 'content', '431960');
+  for (const r of steamRootCandidates()) roots.push(join(r, 'steamapps', 'workshop', 'content', '431960'));
+  for (const base of roots) {
     if (!existsSync(base)) continue;
     for (const id of readdirSync(base)) {
       const p = join(base, id, 'scene.pkg');
@@ -163,6 +162,24 @@ test('compileGlsl: 保留字变量 + 00.25/3.14f 字面量可编译（效果不�
   const glsl = 'void main(){ vec4 sample; sample = vec4(00.25); float x = 3.14f; gl_FragColor = sample + x; }';
   const r = compileGlsl({ fragSource: glsl });
   assert.equal(typeof r.fragFn, 'function', 'compileGlsl 未返回可执行 fragFn');
+});
+
+// ── P3: 跨平台候选路径 ─────────────────────────────────────────────────────
+// 回归背景：locateWeAssets / smoke / survey 各自硬编码 Windows 盘符，Linux/macOS 上
+// 自动定位必然失败。现在统一走 render.js::steamRootCandidates()。
+test('steamRootCandidates: 非空、去重、环境变量优先', () => {
+  const list = steamRootCandidates();
+  assert.ok(Array.isArray(list) && list.length > 0, '候选列表为空');
+  assert.equal(list.length, new Set(list).size, '候选列表有重复');
+  const prev = process.env.DSH_WE_STEAM_ROOT;
+  process.env.DSH_WE_STEAM_ROOT = '/tmp/fake-steam-root';
+  try {
+    const withEnv = steamRootCandidates();
+    assert.equal(withEnv[0], '/tmp/fake-steam-root', 'DSH_WE_STEAM_ROOT 未优先');
+    assert.ok(withEnv.includes('/tmp/fake-steam-root'));
+  } finally {
+    if (prev === undefined) delete process.env.DSH_WE_STEAM_ROOT; else process.env.DSH_WE_STEAM_ROOT = prev;
+  }
 });
 
 // ── runner ─────────────────────────────────────────────────────────────────
