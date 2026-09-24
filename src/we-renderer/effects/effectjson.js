@@ -338,6 +338,21 @@ function installEffectJson(proto) {
           u[un] = textures[idx] || null;
         }
       }
+      // 兜底补绑：按**预处理源码里实际声明的** sampler 再扫一遍。
+      // 只靠 compiled.uniforms（来自 parseMeta）会漏掉"无 // {...} 元注释声明"的 sampler
+      // ⇒ 该 sampler 从未被绑定 ⇒ 运行期 _texSample(null,…) 返回白色（model.js:2252）
+      // ⇒ 整个 pass 静默变纯白。真实工坊 shader 的 sampler 通常带元注释，所以这条是
+      // 健壮性兜底（第三方/改写过的 shader 很容易踩到）。
+      const pre = compiled.fragPre || '';
+      if (pre.indexOf('sampler2D') >= 0) {
+        for (const mm of pre.matchAll(/uniform\s+sampler2D\s+([A-Za-z_]\w*)/g)) {
+          const un = mm[1];
+          if (u[un] === undefined || u[un] === null) {
+            const idx = Number((/g_Texture(\d+)/.exec(un) || [])[1] || 0);
+            u[un] = textures[idx] || null;
+          }
+        }
+      }
     } catch (e) {
       this._fxJsonLastError = 'pass ' + p.index + ' uniform 组装失败: ' + e.message;
       return null;
