@@ -78,6 +78,12 @@ export function installGlsl(proto) {
       }
     }
     const combos = { ...texCombos, ...(pass0.combos || {}) }; // 显式 baked combos 优先
+    // 诊断 DSH_WE_FX_TRACE=1: 打出该效果实际用的 combo 组合 —— 排查"某分支被裁掉/无 main"
+    // 时先看这里（工坊 shader 常用 `#if NODE_COUNT >= n` 决定 main 的形态）。
+    if (process.env.DSH_WE_FX_TRACE === '1') {
+      this.log('FX-TRACE combos ' + name + ' = ' + JSON.stringify(combos)
+        + '  pass0.combos=' + JSON.stringify(pass0.combos || null));
+    }
     // P2-23: 全局 LRU 编译缓存 (key 含完整源码, 即 shader 源 + combos 的 hash)
     const key = sh.frag + '\x00#F\x00' + sh.vert + '\x00#C\x00' + JSON.stringify(combos);
     if (_glslCompileCache.has(key)) {

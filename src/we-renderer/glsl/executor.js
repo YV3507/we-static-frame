@@ -28,6 +28,7 @@ export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolv
   const fragPre = preprocessShader(fragX, { defines: combos, meta: metaF });
   const fragAst = parse(fragPre, { stage: 'fragment', quiet: true });
   const fragCode = transpile(fragAst, 'fragment');
+  assertHasMain(fragCode, fragX, combos, meta.combos, 'fragment');
   let vertFn = null;
   let varyings = [];
   let vertPre = null;
@@ -35,6 +36,7 @@ export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolv
     vertPre = preprocessShader(vertX, { defines: combos, meta: metaV });
     const vertAst = parse(vertPre, { stage: 'vertex', quiet: true });
     const vertCode = transpile(vertAst, 'vertex');
+    assertHasMain(vertCode, vertX, combos, metaV.combos, 'vertex');
     vertFn = new Function('__u', '__v', '__a', '__rt', vertCode);
     varyings = collectVaryings(vertAst);
   }
@@ -53,6 +55,34 @@ export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolv
   // 与 CPU 解释器共用预处理 ⇒ 两侧跑的是同一个程序 (include 展开 / combo 宏 / meta
   // 兜底都不会分叉), 这是 GPU 输出能与 CPU 对齐的前提。
   return { fragFn, vertFn, varyings, uniforms: meta.uniforms, combos: meta.combos, fragPre, vertPre, fragCode };
+}
+
+/**
+ * 编译期断言：预处理后的源码里必须还有 `main`。
+ *
+ * 为什么要提前拦：工坊 shader 常用 `#if <COMBO> == n` 分出多份 `main`（实测 auto_sway
+ * 有 AA_VERSION==1/2/3 三份）。若该 combo 既不在场景实例里、也不在 shader 元注释里，
+ * 三份 main 会被一起裁掉 —— 转译仍然"成功"，直到运行期才抛一句
+ * `ReferenceError: main is not defined`，完全看不出原因（本仓库 issue #1）。
+ * 现在报错直接给出**缺失的 combo 名单**，便于判断是"组合没传进来"还是"壁纸本身缺默认值"。
+ */
+function assertHasMain(code, preprocessedSrc, combos, metaCombos, stage) {
+  if (/\bfunction\s+main\s*\(/.test(code)) return;
+  const missing = [];
+  for (const m of String(preprocessedSrc).matchAll(/#\s*if\s+([A-Za-z_]\w*)/g)) {
+    const n = m[1];
+    if (combos && combos[n] !== undefined) continue;
+    if (n === 'defined' || n === 'GL_ES') continue;
+    // 带上"元注释里有没有默认值"：只由 require 间接引用、没有 default 的 combo
+    // （实测 auto_sway 的 AA_VERSION）会被当成 0，正是裁掉全部 main 的元凶。
+    const mc = metaCombos && metaCombos[n];
+    const tag = mc === undefined ? '(无声明)' : '(元注释默认 ' + JSON.stringify(mc && mc.default !== undefined ? mc.default : mc) + ')';
+    const item = n + tag;
+    if (!missing.includes(item)) missing.push(item);
+  }
+  throw new Error('预处理后没有 main（' + stage + '）：`#if` 组合分支把 main 整段裁掉了'
+    + (missing.length ? '；未提供且无默认值的 combo: ' + missing.join(', ') : '')
+    + '（工坊 shader 可能依赖编辑器侧的 combo 默认值，而壁纸包内没有声明）');
 }
 
 function collectVaryings(ast) {
