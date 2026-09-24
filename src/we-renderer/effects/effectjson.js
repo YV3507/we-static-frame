@@ -327,7 +327,10 @@ function installEffectJson(proto) {
         parallaxPosition: this.optsMouse ? [this.optsMouse.x, this.optsMouse.y] : [0.5, 0.5],
       });
       for (const [un, info] of Object.entries(compiled.uniforms)) {
-        if (info.type === 'sampler2D' && u[un] === undefined) {
+        // null 也要补绑：buildUniforms 对"无常量/无默认值"的 sampler 会显式给出 null，
+        // 若只判 undefined 就会漏过 ⇒ 采样器为 null ⇒ _texSample 兜底返回白色
+        // （实测：数据通路里经 shaderPatch 改写 uniform 集合后，整个 pass 输出纯白 255）。
+        if (info.type === 'sampler2D' && (u[un] === undefined || u[un] === null)) {
           const idx = Number((/g_Texture(\d+)/.exec(un) || [])[1] || 0);
           u[un] = textures[idx] || null;
         }
