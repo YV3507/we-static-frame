@@ -1,0 +1,54 @@
+{
+  "name": "we-static-frame",
+  "version": "0.1.0",
+  "description": "Standalone static-frame renderer for Wallpaper Engine scene wallpapers (scene.pkg) — extracted from dsh-plugin-wallpaper-engine; usable as a library or CLI, independent of any host.",
+  "type": "module",
+  "license": "MIT",
+  "author": "elysia395",
+  "homepage": "https://github.com/YV3507/we-static-frame#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YV3507/we-static-frame.git"
+  },
+  "bugs": {
+    "url": "https://github.com/YV3507/we-static-frame/issues"
+  },
+  "keywords": [
+    "wallpaper-engine",
+    "scene-pkg",
+    "static-frame",
+    "offline-renderer",
+    "renderer",
+    "png",
+    "glsl",
+    "headless-gl",
+    "wallpaper"
+  ],
+  "main": "src/render.js",
+  "exports": {
+    ".": "./src/render.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "we-sf": "src/cli.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "smoke": "node test/smoke.mjs",
+    "survey": "node test/survey.mjs"
+  },
+  "dependencies": {
+    "@shaderfrog/glsl-parser": "^7.0.1",
+    "jpeg-js": "^0.4.4"
+  },
+  "optionalDependencies": {
+    "supreium-headless-gl": "^8.3.0"
+  }
+}

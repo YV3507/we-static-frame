@@ -1,0 +1,16 @@
+# 统一按 LF 存库：src/** 是逐字节搬运的渲染器，跨平台保持一致可避免镜像比对出现
+# 纯换行符差异（Windows 默认 core.autocrlf=true 会把检出的 LF 变成 CRLF）。
+* text=auto eol=lf
+
+# 二进制/资产不参与行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pkg binary
+*.tex binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary

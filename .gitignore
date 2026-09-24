@@ -1,0 +1,16 @@
+node_modules/
+out/
+*.log
+.test-tmp/
+
+# 本地 npm 缓存托管目录（CI / 沙箱里用 --cache 指定）
+.npm-cache*/
+
+# 打包产物
+*.tgz
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
