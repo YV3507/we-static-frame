@@ -33,7 +33,7 @@ const JSON_FX_OFF = process.env.DSH_WE_NO_FXJSON === '1';
 const DUMP = process.env.DSH_WE_FX_DUMP === '1';
 
 /** 像素摘要：采样亮度均值 / 覆盖度（alpha>8）/ 不同颜色数，用于"哪个 pass 先变常量"。 */
-function summarizeRgba(m) {
+export function summarizeRgba(m) {
   if (!m || !m.rgba || !m.width || !m.height) return '(no rgba)';
   const n = m.width * m.height, st = Math.max(1, Math.floor(n / 200));
   let sum = 0, cov = 0, tot = 0;
@@ -127,6 +127,9 @@ function installEffectJson(proto) {
     const passes = [];
     const problems = [];
     for (const [i, p] of (json.passes || []).entries()) {
+      // `bind` = "第 i 槽绑哪个 RT/纹理" 的**权威声明**，从原始 effect.json 原样带过来，
+      // 让解析记录与声明一一对应（排查时不必回查 def.json）。消费方是
+      // `_fxJsonTextures`（读 def.json 的同一份声明）与 gpu-gl 适配层构造的 pass.bind。
       const rec = { index: i, material: p.material || null, target: p.target || null, bind: p.bind || null,
         targetscale: p.targetscale ?? null, shaderStem: null, fragRel: null, vertRel: null,
         frag: null, vert: null, fragWhere: null, vertWhere: null, meta: null,
@@ -216,12 +219,22 @@ function installEffectJson(proto) {
     const p = def.passes[passIndex];
     const refs = [];
     const binds = [];
-    if (p && p.bind) for (const b of p.bind) binds.push(b);
+    // ★ bind 只在**原始 effect.json 声明**里 (`def.json.passes[i].bind`)，解析后的 pass 记录
+    //   (`def.passes[i]`) 不复制该字段 —— 早先读 `p.bind` 恒为 undefined ⇒ 数据通路的
+    //   bind 槽位全部落空，只剩 `refs[0] = 'previous'` 兜底。CPU 侧因此长期把"按 bind
+    //   显式绑定的 RT/纹理"当成未绑定（采样得 null → 白色），GPU 侧则整条链零绑定
+    //   （FX-DUMP 里 binds= 为空、pass0 输出纯白 255）。两处读同一张表，故一处修好即为两侧修好。
+    const declared = (def.json && def.json.passes && def.json.passes[passIndex]) || {};
+    if (declared.bind) for (const b of declared.bind) binds.push(b);
     for (const b of binds) if (b && b.index != null) refs[Number(b.index)] = b.name;
-    const sceneP = (def.json.passes || [])[passIndex] || {};
     const sceneTex = (ef.passes && ef.passes[passIndex] && ef.passes[passIndex].textures) || null;
-    const list = sceneTex || p.materialTextures || sceneP.textures || null;
-    if (list) for (const [i, t] of list.entries()) if (refs[i] === undefined) refs[i] = t;
+    const list = sceneTex || p.materialTextures || declared.textures || null;
+    if (list) {
+      for (let i = 0; i < list.length; i++) {
+        // bind 声明的槽位优先 (它就是"这一槽绑哪个 RT/纹理"的权威)；其余按材质/实例声明补
+        if (refs[i] === undefined) refs[i] = list[i];
+      }
+    }
     if (refs[0] === undefined) refs[0] = 'previous';
     return { refs, binds };
   };
@@ -229,6 +242,10 @@ function installEffectJson(proto) {
   /**
    * 按 effect.json 执行整条效果链。返回新图像, 或**原图** (不可执行/失败)。
    * 失败原因写入 this._fxJsonLastError (供 effects.js 精确记 degraded)。
+   *
+   * GPU 版 (`_tryEffectJsonGpu`) 的调用点在 effects.js 的 GPU 阶段 —— 只有那里同时掌握
+   * "有没有原生内核"(KERNEL_FX) 与下游决策 (backend:'cpu'/'gpu-only'/gpu 名单)。本函数
+   * 保持"纯 CPU"语义, 这样 CPU 侧行为与接线前逐位一致 (便于 A/B 对照)。
    */
   proto._applyEffectJsonEffect = function (img, ef, name, t) {
     this._fxJsonLastError = null;

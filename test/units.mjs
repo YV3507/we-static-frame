@@ -13,7 +13,7 @@ import { applySceneScripts, createScriptCache } from '../src/scene-scripts.js';
 import { renderFrame, sampleFrame, locateWeAssets, steamRootCandidates } from '../src/render.js';
 import { renameReservedSample, balanceConditionals } from '../src/we-renderer/glsl/preprocess.js';
 import { normalizePolicy, isNoopPolicy, decideEffect, gpuAllowsEffect, normalizeBackend, GPU_MODES } from '../src/policy.js';
-import { compileGlsl } from '../src/we-renderer/glsl/executor.js';
+import { compileGlsl, renderGlsl } from '../src/we-renderer/glsl/executor.js';
 
 const cases = [];
 const test = (name, fn) => cases.push({ name, fn });
@@ -163,6 +163,50 @@ test('compileGlsl: 保留字变量 + 00.25/3.14f 字面量可编译（效果不�
   const glsl = 'void main(){ vec4 sample; sample = vec4(00.25); float x = 3.14f; gl_FragColor = sample + x; }';
   const r = compileGlsl({ fragSource: glsl });
   assert.equal(typeof r.fragFn, 'function', 'compileGlsl 未返回可执行 fragFn');
+});
+
+// ── issue #2: v_TexCoord 播种 (offset is out of bounds + 顶点没写时的默认值) ────
+// 回归背景：
+//   ① `pass6(gaussian_y)` 这类 pass 的 vert **声明了 v_TexCoord 却没写** ⇒ 角点恒 (0,0)
+//      ⇒ 采样永远命中同一个点 ⇒ 整幅常量。修法 = 顶点没写时用全屏 quad 角点播种。
+//   ② 播种值长度必须与编译器按声明类型分配的缓冲一致：给声明 `vec2` 的 varying 播种
+//      4 元值会让插值端的 `Float32Array.set` 抛 `offset is out of bounds`
+//      （实测 geometric_transform / bokeh_blur 的失败）。
+//   ③ 顶点**写了**就不得覆盖它（否则顶点程序形同虚设）。
+// 用 UV 诊断片段（输出 v_TexCoord.xy）判定"是否随像素变化"。
+test('renderGlsl: 顶点没写 v_TexCoord 时用全屏 quad 角点播种（vec2/vec4 都不越界）', () => {
+  const frag2 = 'varying vec2 v_TexCoord;\nvoid main(){ gl_FragColor = vec4(v_TexCoord.x, v_TexCoord.y, 0.0, 1.0); }';
+  const vertNoWrite = 'attribute vec3 a_Position;\nattribute vec2 a_TexCoord;\nvarying vec2 v_TexCoord;\n'
+    + 'void main(){ gl_Position = vec4(a_Position, 1.0); }';
+  const c = compileGlsl({ fragSource: frag2, vertSource: vertNoWrite, combos: {} });
+  const out = renderGlsl(c, { width: 4, height: 4, u: {}, sampler: () => [0, 0, 0, 1] });
+  assert.equal(out.pixelErrors, 0, '播种路径不应有像素异常: ' + out.lastError);
+  const uniq = new Set();
+  for (let i = 0; i < 16; i++) uniq.add(out.rgba[i * 4] + ',' + out.rgba[i * 4 + 1]);
+  assert.ok(uniq.size > 1, '顶点没写 v_TexCoord 时应播种出随像素变化的 UV, 实际 colors=' + uniq.size);
+
+  // vec4 声明同样不能越界（播种值按声明类型取长度）
+  const frag4 = 'varying vec4 v_TexCoord;\nvoid main(){ gl_FragColor = vec4(v_TexCoord.x, v_TexCoord.y, 0.0, 1.0); }';
+  const vertNoWrite4 = 'attribute vec3 a_Position;\nattribute vec2 a_TexCoord;\nvarying vec4 v_TexCoord;\n'
+    + 'void main(){ gl_Position = vec4(a_Position, 1.0); }';
+  const c4 = compileGlsl({ fragSource: frag4, vertSource: vertNoWrite4, combos: {} });
+  const out4 = renderGlsl(c4, { width: 4, height: 4, u: {}, sampler: () => [0, 0, 0, 1] });
+  assert.equal(out4.pixelErrors, 0, 'vec4 v_TexCoord 播种不应越界: ' + out4.lastError);
+});
+
+test('renderGlsl: 顶点写了 v_TexCoord 时不被播种覆盖（分量写入形态也算写了）', () => {
+  const frag = 'varying vec2 v_TexCoord;\nvoid main(){ gl_FragColor = vec4(v_TexCoord.x, v_TexCoord.y, 0.0, 1.0); }';
+  // 顶点恒写 (0.25, 0.75)：若被播种覆盖，输出会变成随像素变化的 UV 渐变
+  const vertWrites = 'attribute vec3 a_Position;\nattribute vec2 a_TexCoord;\nvarying vec2 v_TexCoord;\n'
+    + 'void main(){ v_TexCoord.xy = vec2(0.25, 0.75); gl_Position = vec4(a_Position, 1.0); }';
+  const c = compileGlsl({ fragSource: frag, vertSource: vertWrites, combos: {} });
+  const out = renderGlsl(c, { width: 4, height: 4, u: {}, sampler: () => [0, 0, 0, 1] });
+  assert.equal(out.pixelErrors, 0, '顶点写 v_TexCoord 不应有像素异常: ' + out.lastError);
+  const uniq = new Set();
+  for (let i = 0; i < 16; i++) uniq.add(out.rgba[i * 4] + ',' + out.rgba[i * 4 + 1]);
+  assert.equal(uniq.size, 1, '顶点写入的 v_TexCoord 被播种覆盖了 (colors=' + uniq.size + ')');
+  assert.equal(out.rgba[0], 64, 'v_TexCoord.x=0.25 应输出 64, 实际 ' + out.rgba[0]);
+  assert.equal(out.rgba[1], 191, 'v_TexCoord.y=0.75 应输出 191, 实际 ' + out.rgba[1]);
 });
 
 // ── P3: 跨平台候选路径 ─────────────────────────────────────────────────────

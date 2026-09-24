@@ -28,19 +28,34 @@ export function disposeGL() {
  * @param {object} opts.ef 合并后 effect 定义 { fbos, passes }
  * @param {{width,height,rgba}} opts.img 输入帧
  * @param {(materialPath) => {fragPre,vertPre,uniforms}} opts.passShader 材质 → 编译结果
- * @param {(matPath) => object} opts.readMaterial 材质 JSON 读取
- * @param {object} opts.uPerPass 每 pass 的 uniform 组装函数 (pass, compiled, input) => u
+ * @param {object} opts.uPerPass 每 pass 的 uniform 组装函数 (pass, compiled, inputTex, bound, outW, outH) => u
+ * @param {function} [opts.onPass] 逐 pass 回调 (pass, out, ctx) —— 诊断取证用 (DSH_WE_FX_DUMP)
+ * @param {Array} [opts.passTrace] 诊断: 逐 pass 的 {pass, idx, target, binds, src} 记录
  * @returns {{width,height,rgba}} 结果
  */
-export function runMultiPassOnGL({ ef, img, passShader, uPerPass }) {
+export function runMultiPassOnGL({ ef, img, passShader, uPerPass, onPass, passTrace }) {
   const W = img.width, H = img.height;
   const fbos = {};
   for (const f of ef.fbos || []) {
     const sc = f.scale || 1;
     fbos[f.name] = { width: Math.max(1, Math.round(W / sc)), height: Math.max(1, Math.round(H / sc)), rgba: null };
   }
+  // 取证记录表: pass 对象 → 记录。**必须在循环外先建好** —— passShader 内部要按 pass
+  // 写回 src (它与 uPerPass 拿到的 pass 是同一个对象引用, 这样两处都不必猜下标)。
+  const recByPass = new Map();
+  const recFor = (pass) => {
+    if (!passTrace) return null;
+    let rec = recByPass.get(pass);
+    if (!rec) {
+      rec = { pass, idx: passTrace.length, target: pass.target || null, binds: [], src: null };
+      recByPass.set(pass, rec);
+      passTrace.push(rec);
+    }
+    return rec;
+  };
   let last = img;
   for (const pass of ef.passes || []) {
+    recFor(pass); // 先登记, 让 passShader 能写回 src (与 CPU 侧 src= 同一字段)
     const compiled = passShader(pass.material);
     if (!compiled) continue;
     const target = pass.target ? fbos[pass.target] : null;
@@ -63,6 +78,7 @@ export function runMultiPassOnGL({ ef, img, passShader, uPerPass }) {
       width: outW, height: outH,
     });
     if (!out) continue;
+    if (onPass) onPass(pass, out, { outW, outH, target: pass.target || null, bound, rec: recByPass.get(pass) || null });
     if (target) { target.rgba = out.rgba; target.width = out.width; target.height = out.height; }
     else last = out;
   }

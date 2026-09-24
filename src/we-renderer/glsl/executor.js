@@ -8,6 +8,16 @@ import { transpile } from './transpile.js';
 import { preprocessShader, parseMeta, expandIncludes, renameReservedSample } from './preprocess.js';
 import { runtimeObject, DISCARD } from './runtime.js';
 
+// A/B 开关 (issue #2): 关掉"顶点没写 v_TexCoord 时用全屏 quad 角点播种"的兜底, 回到
+// 接线前行为 —— 用于**同一会话内**量出该兜底修好了什么 (跨会话的机器负载不同, 不可比)。
+const NO_SEED_TEXCOORD = process.env.DSH_WE_NO_SEED_VTEXCOORD === '1';
+
+// vec 类型 → 分量数。**必须声明在所有使用点之前**：`seedTexCoord`/`renderGlsl` 都在
+// 模块顶层函数里引用它，而 const 有 TDZ —— 若声明晚于这些函数体所在位置，调用时会抛
+// ReferenceError，被上层 catch 吞掉后表现为"播种值总是 4 元"（issue #2 的
+// offset is out of bounds 就是这么来的：vec2 缓冲收到 4 元 src）。
+const VEC_LEN = { vec2: 2, vec3: 3, vec4: 4, ivec2: 2, ivec3: 3, ivec4: 4, bvec2: 2, bvec3: 3, bvec4: 4 };
+
 export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolveInclude = null, onWarn = null }) {
   // GLS-22: 先展开 include 再取 meta — 头文件内声明的 uniform/元注释不再丢失。
   // 展开后立刻做保留字改名：shaderfrog 把 sample/buffer/shared/patch/precise/subroutine
@@ -32,10 +42,11 @@ export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolv
   let vertFn = null;
   let varyings = [];
   let vertPre = null;
+  let vertCode = null;
   if (vertX) {
     vertPre = preprocessShader(vertX, { defines: combos, meta: metaV });
     const vertAst = parse(vertPre, { stage: 'vertex', quiet: true });
-    const vertCode = transpile(vertAst, 'vertex');
+    vertCode = transpile(vertAst, 'vertex');
     assertHasMain(vertCode, vertX, combos, metaV.combos, 'vertex');
     vertFn = new Function('__u', '__v', '__a', '__rt', vertCode);
     varyings = collectVaryings(vertAst);
@@ -54,7 +65,45 @@ export function compileGlsl({ fragSource, vertSource = null, combos = {}, resolv
   // fragPre/vertPre 一并返回: GPU 路径 (gpu-gl/adapter.js) 需要**同一份**预处理源码。
   // 与 CPU 解释器共用预处理 ⇒ 两侧跑的是同一个程序 (include 展开 / combo 宏 / meta
   // 兜底都不会分叉), 这是 GPU 输出能与 CPU 对齐的前提。
-  return { fragFn, vertFn, varyings, uniforms: meta.uniforms, combos: meta.combos, fragPre, vertPre, fragCode };
+  return { fragFn, vertFn, varyings, uniforms: meta.uniforms, combos: meta.combos, fragPre, vertPre, vertCode, fragCode };
+}
+
+/**
+ * 顶点阶段的生成代码里是否**写过**某个 varying —— 用于决定要不要用"全屏 quad 角点"给它
+ * 播种默认值（见 renderGlsl 的 v_TexCoord 兜底）。
+ *
+ * 只按"有没有出现写入"判断，不区分整变量/分量：`v_TexCoord.xy = a_TexCoord`（工坊
+ * geometric_transform 的写法）会转译成 `__v.v_TexCoord[0] = …` 两条分量写入，只匹配
+ * `__v.name.set(` / `__v.name =` 会漏判 ⇒ 误播种 ⇒ 播下的 4 元值又被插值进按声明类型
+ * 分配的缓冲（vec2 = 2 元）⇒ `Float32Array.set` 抛 offset is out of bounds（issue #2）。
+ * 反之，只要顶点碰过这个 varying 就以顶点为准（哪怕只写了部分分量）：顶点是权威，
+ * 引擎默认值只在顶点**完全没写**时提供。
+ */
+function vertWritesVarying(vertCode, name) {
+  if (!vertCode) return false;
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // __v.name[…]= / __v.name = / __v.name.set( / __v.name.x = / __v.name.x *= …
+  return new RegExp('__v\\.' + n + '\\s*(\\.\\s*set\\s*\\(|\\[[^\\]]*\\]\\s*[-+*/]?=|\\.[xyzwrgba]{1,4}\\s*[-+*/]?=|[-+*/]?=)').test(vertCode);
+}
+
+/**
+ * v_TexCoord 的默认角点值。**返回数组的长度必须等于编译器为该 varying 预分配的缓冲长度**
+ * —— `__v[name].set(src)` 在 src 比缓冲长时抛 `RangeError: offset is out of bounds`。
+ * 注意 `[u, v, cond ? u : 0, cond ? v : 0]` 这种写法**永远**是 4 元（条件只决定元素值，
+ * 不改变数组长度），给声明成 `vec2` 的 varying 播种就会越界 —— issue #2 的
+ * "offset is out of bounds" 正是这么来的（geometric_transform / bokeh_blur）。
+ * 这里按声明类型精确取长：vec2 → (u,v)、vec3 → (u,v,0)、vec4 → (u,v,u,v)
+ * （vec4 的 zw 同 uv，与引擎/默认顶点着色器的约定一致）。
+ */
+function seedTexCoord(vn, corner) {
+  const u = corner.uv[0], v = corner.uv[1];
+  const n = VEC_LEN[vn.type] || 4;
+  const out = new Array(n);
+  out[0] = u;
+  if (n > 1) out[1] = v;
+  if (n > 2) out[2] = n === 4 ? u : 0;
+  if (n > 3) out[3] = v;
+  return out;
 }
 
 /**
@@ -117,7 +166,6 @@ function collectVaryings(ast) {
   }
   return out;
 }
-const VEC_LEN = { vec2: 2, vec3: 3, vec4: 4, ivec2: 2, ivec3: 3, ivec4: 4, bvec2: 2, bvec3: 3, bvec4: 4 };
 function makeVarying(name, type) {
   return { name, type };
 }
@@ -278,8 +326,17 @@ export function renderGlsl(compiled, { width, height, u, sampler }) {
       }
       // 引擎隐式 varying (v_TexCoord): 先用全屏 quad 的角点 uv 兜底 —— 顶点若自己声明并写
       // 了同名 varying, 会在 main() 里覆盖掉这个默认值 (与官方引擎"引擎提供默认值"一致)。
+      //
+      // ⚠️ 只能给**顶点侧真的没写**的 v_TexCoord 播种。issue #2 round18 的教训: 早先这里
+      // 判的是 `vn.implicit`（只有"片元用了但顶点没声明"才置位），于是 pass6(gaussian_y)
+      // 这种"vert 声明了 v_TexCoord 但分支里没写"的情形整段角点恒为 (0,0) —— 采样永远命中
+      // 同一个点, 输出整幅常量 (实测 colors=1/mean=0.0)。判据放宽成"顶点侧没写就播种"后
+      // 又踩到另一头: 顶端已算好的角点被这次播种**整个覆盖** ⇒ 顶点程序形同虚设。
+      // 正确判据 = **顶点侧有没有写**: 写了就一律不碰 (顶点是权威), 没写才补默认值。
       for (const vn of compiled.varyings) {
-        if (vn.implicit && !vn.arrayLen && vn.name === 'v_TexCoord') __v[vn.name].set([c.uv[0], c.uv[1], c.uv[0], c.uv[1]]);
+        if (NO_SEED_TEXCOORD || vn.arrayLen || vn.name !== 'v_TexCoord') continue;
+        if (vertWritesVarying(compiled.vertCode, 'v_TexCoord')) continue;
+        __v[vn.name].set(seedTexCoord(vn, c));
       }
       const vertCtx = compiled.vertFn(u, __v, __a, rt);
       if (vertCtx.__initGlobals) vertCtx.__initGlobals(); // GLS-26: 逐角重置全局
@@ -291,9 +348,12 @@ export function renderGlsl(compiled, { width, height, u, sampler }) {
   // (bloom / bokeh_blur / lens_flare_sun 的 down_sample、light_map 等)，
   // 此时上面那段角点循环根本不执行 ⇒ __v.v_TexCoord 缺失 ⇒ 片元读 __v.v_TexCoord[0]
   // 抛 "Cannot read properties of undefined (reading '0')" ⇒ 整个 pass 失败。
+  // 同上：只补"顶点侧没写"的那些 (有顶点程序且它写了 v_TexCoord 时 cornerVals 已有值)。
   for (const vn of compiled.varyings) {
-    if (!vn.implicit || vn.arrayLen || cornerVals[vn.name]) continue;
-    cornerVals[vn.name] = corners.map((c) => Float32Array.from([c.uv[0], c.uv[1], c.uv[0], c.uv[1]]));
+    if (NO_SEED_TEXCOORD || vn.arrayLen || vn.name !== 'v_TexCoord') continue;
+    if (cornerVals[vn.name]) continue;
+    if (compiled.vertCode && vertWritesVarying(compiled.vertCode, 'v_TexCoord')) continue;
+    cornerVals[vn.name] = corners.map((c) => Float32Array.from(seedTexCoord(vn, c)));
   }
   // ── frag 装配 (__v 必须与像素循环共享同一对象 — 模块闭包引用构造时传入的引用) ──
   const __v = {};

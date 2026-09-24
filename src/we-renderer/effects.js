@@ -47,6 +47,16 @@ import { profAdd, profPx, profileEnabled } from './profile.js';
  */
 const GPU_CHAIN_EFFECTS = new Set(['opacity', 'color_grading']);
 const GPU_CHAIN_MAX = 4;
+/**
+ * **有原生内核**的效果名 (即下面 if/else 分派链覆盖的那些)。用于把 "effect.json 数据通路
+ * 的 GPU 执行" 限定在**没有内核**的效果上 —— 有内核的效果其像素由内核/猜名通路决定,
+ * 不该被数据通路抢走 (issue #4① 接线前这条通路只在两处都失败时才启用, 现在 GPU 版提前
+ * 到 GPU 阶段, 必须保持同一判据, 否则会改变既有场景像素)。
+ */
+const KERNEL_FX = new Set(['waterwaves', 'waterflow', 'foliagesway', 'skew', 'iris', 'lightshafts',
+  'cloudmotion', 'shimmer', 'blurradial', 'clouds', 'swing', 'waterripple', 'shake', 'scroll',
+  'tint', 'pulse', 'filmgrain', 'godrays', 'texture_override', 'glitter', 'opacity', 'blur',
+  'depthparallax', 'watercaustics', 'blend']);
 // 链式执行自检 (默认关): 额外跑一遍"逐效果单独走 GPU"并逐位对比, 生产零开销。
 const CHAIN_VERIFY = process.env.DSH_WE_CHAIN_VERIFY === '1';
 // A/B 开关: 关掉链式执行做对照
@@ -194,6 +204,23 @@ export function installEffects(proto) {
               }
             }
             if (!gpuImg && !_forcedCpu && _gpuOk && this._tryEffectGpu) gpuImg = this._tryEffectGpu(img, ef, name, c, pass, t);
+            // ── GPU: effect.json 数据通路的多 pass 效果 (issue #4①) ──────────────
+            // bloom / blurprecise / bokeh_blur 这类效果**不在**上面两条单 pass 通路的能力
+            // 范围内 (既没有注册表内核, 也没有"按效果目录名能猜到"的 shader), 而它们正是
+            // 耗时大户。适配层的 `_tryEffectJsonGpu` 用 gpu-gl 的 FBO 链执行器跑同一份 def
+            // (编译源 / uniform 组装与 CPU 数据通路共用同一套函数), 失败返回 null ⇒ 落到
+            // 下面 CPU 分支, 与既有回退策略一致。
+            //
+            // 判据 = "有 KERNEL_FX 内核就不抢" + "effect.json 有可执行 pass" + 策略允许 (backend:'cpu' 等)。
+            const dataPathGpuCand = !!(this._tryEffectJsonGpu && this._fxJsonDef && !KERNEL_FX.has(name)
+              && (!this._gpuPathAllowed || this._gpuPathAllowed(name, _dec)));
+            if (!gpuImg && !_forcedCpu && _gpuOk && dataPathGpuCand) {
+              let jdef = null;
+              try { jdef = this._fxJsonDef(ef, name); } catch { jdef = null; }
+              if (jdef && jdef.passes && jdef.passes.length && !jdef.passes.some((p) => !p.frag)) {
+                gpuImg = this._tryEffectJsonGpu(jdef, ef, img, t, name);
+              }
+            }
             // backend='gpu-only'：调用方明确要求"GPU 做不了就别做"（不静默回退 CPU，
             // 便于下游用严格模式核对 GPU/CPU 一致性）。默认 'auto' 不受影响。
             if (_gpuOnly && !gpuImg) {

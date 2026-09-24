@@ -351,6 +351,25 @@ export class SceneRenderer {
   }
 
   /**
+   * **数据通路 (effect.json 多 pass) 是否允许走 GPU** —— 接线判据中"策略"那一半。
+   *
+   * CPU 版数据通路自带 sampler/纹理来源, 不需要这个判据; GPU 版需要, 因为:
+   *   · `backend:{ [name]: 'cpu'|'off' }` → 策略里说好了这个效果只走 CPU, 不得走 GPU;
+   *   · `gpu.mode='off'` / `gpu.denyEffects` / `gpu.allowEffects` → 同 `_gpuAllowsEffect`;
+   *   · `gpu-only` **允许试** —— 试不成由 effects.js 现有的 gpu-only 短路按严格模式跳过。
+   *
+   * @param {string} name 效果名
+   * @param {object} [dec] 本次效果的决策记录 (可为 null)
+   */
+  _gpuPathAllowed(name, dec) {
+    if (this._policyNoop) return true;
+    if (dec && dec.backend === 'cpu') return false;
+    const b = normalizeBackend(this.policy.backend[name]);
+    if (this.policy.backend[name] !== undefined && b === 'cpu') return false;
+    return this._gpuAllowsEffect(name);
+  }
+
+  /**
    * 逐着色器源码覆写钩子（借鉴 webwallgl 的 `__shaderPatch`）：
    * key 命中「着色器 stem」或「effects/<name>」时把源码交给调用方改写。
    * 返回 null/undefined/非字符串 ⇒ 保持原样；抛错 ⇒ 保持原样（不牵连渲染）。
