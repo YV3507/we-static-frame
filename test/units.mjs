@@ -219,6 +219,8 @@ test('normalizePolicy: 非法输入回落到安全默认（不抛错）', () => 
   assert.equal(normalizePolicy({}).gpu.mode, 'auto', '未提供 gpu 时不应擅自关闭');
   assert.equal(normalizePolicy({ gpu: { failStreakLimit: 0 } }).gpu.failStreakLimit, Infinity, '0 应表示永不熔断');
   assert.equal(normalizePolicy({ gpu: { failStreakLimit: 'x' } }).gpu.failStreakLimit, 3, '非法阈值未回落');
+  assert.equal(normalizePolicy({}).skipDegenerate, true, '退化保护应默认开启');
+  assert.equal(normalizePolicy({ effects: { skipDegenerate: false } }).skipDegenerate, false, 'skipDegenerate:false 未生效');
 });
 
 test('isNoopPolicy: 空策略被识别为 no-op（零开销前提）', () => {

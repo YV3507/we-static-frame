@@ -349,9 +349,20 @@ export function installEffects(proto) {
               // RGBA 全图同值才算"整幅单色"退化 (RGB 单色 + alpha 形状 = 合法 mask 产物)
               const flat = sa.uniRgba && !sb.uniRgba;
               if (collapsed || flat) {
-                this.log('效果 ' + name + ': 输出退化 (' + (flat ? '整幅单色' : '覆盖度 ' + (sb.cov * 100).toFixed(0) + '%→' + (sa.cov * 100).toFixed(0) + '%') + '), 已丢弃并保留原图');
-                this._degraded(o.name != null ? String(o.name) : null, 'effect:' + name, '效果输出退化，已丢弃并保留原图');
-                img = __before;
+                const why = flat ? '整幅单色' : ('覆盖度 ' + (sb.cov * 100).toFixed(0) + '%→' + (sa.cov * 100).toFixed(0) + '%');
+                // 下游策略可关闭退化保护（effects.skipDegenerate=false）：保留效果原始输出，
+                // 便于取证"退化输出到底是什么"（全透明/纯色/NaN）。关闭时记一条决策便于追溯。
+                const keepDegenerate = !!(this.policy && this.policy.skipDegenerate === false);
+                if (keepDegenerate) {
+                  this.log('效果 ' + name + ': 输出退化 (' + why + ')，按策略 skipDegenerate:false 保留原始输出');
+                  if (this._reportDecision) {
+                    this._reportDecision({ effect: name, layer: o.name != null ? String(o.name) : null, index: ei, action: 'apply', backend: 'auto', reason: '输出退化（' + why + '）但按 skipDegenerate:false 保留', source: 'policy' });
+                  }
+                } else {
+                  this.log('效果 ' + name + ': 输出退化 (' + why + '), 已丢弃并保留原图');
+                  this._degraded(o.name != null ? String(o.name) : null, 'effect:' + name, '效果输出退化，已丢弃并保留原图');
+                  img = __before;
+                }
               }
             }
           }
