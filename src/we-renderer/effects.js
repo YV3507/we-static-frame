@@ -197,8 +197,15 @@ export function installEffects(proto) {
             // backend='gpu-only'：调用方明确要求"GPU 做不了就别做"（不静默回退 CPU，
             // 便于下游用严格模式核对 GPU/CPU 一致性）。默认 'auto' 不受影响。
             if (_gpuOnly && !gpuImg) {
-              this._reportDecision({ effect: name, layer: o.name != null ? String(o.name) : null, index: ei, action: 'skip', backend: 'gpu-only', reason: 'backend=gpu-only 但 GPU 未产出（不可用/编译失败/熔断）', source: 'backend-map' });
-              this.log('策略跳过效果 ' + name + '（gpu-only 且 GPU 未产出）');
+              // 区分两种"GPU 未产出"：后端压根不可用/已熔断，还是后端可用但适配层没接手
+              // 这个效果（不在支持范围 / 无可编译 fragPre / 链式条件不满足）。后者是
+              // "GPU 路径能力边界"，下游可用它决定"这个效果要不要只走 CPU"。
+              const backendUp = !!(this._getGpuBackend && this._getGpuBackend());
+              const why = backendUp
+                ? 'GPU 可用但该效果未被适配层接手（不在支持范围/无可编译 fragPre/链式条件不满足）'
+                : 'GPU 不可用或已熔断';
+              this._reportDecision({ effect: name, layer: o.name != null ? String(o.name) : null, index: ei, action: 'skip', backend: 'gpu-only', reason: why, source: 'backend-map' });
+              this.log('策略跳过效果 ' + name + '（gpu-only 且 GPU 未产出：' + why + '）');
               continue;
             }
             if (gpuImg) {

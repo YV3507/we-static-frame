@@ -62,6 +62,8 @@ src/render.js           ← 本仓库的库入口（renderFrame / renderToFile /
 src/cli.js              ← 本仓库的 CLI（we-sf）
 test/smoke.mjs          ← 冒烟：能拿到场景就渲染一张并校验 PNG 头（拿不到则 SKIP）
 test/survey.mjs         ← 普查：本机全库逐个渲染，汇总空白帧 / 降级 / 耗时（人读表格 + JSON）
+test/gpu-parity.mjs     ← CPU/GPU 对拍：`gpu:'auto'` + 全部效果 `gpu-only`，
+                          用 decisions[] 测出「哪些效果 GPU 能跑、哪些跑不了及原因」
 ```
 
 **`src/**` 的约定（vendored + 本地补丁）**：这部分代码**来源**是主插件的静态帧链，但本仓库是它的
@@ -120,7 +122,13 @@ we-sf render scene.pkg -o out.png --skip-effect bloom  # 可重复；--no-effect
 we-sf render scene.pkg -o out.png --only-effect waterwaves   # 白名单（可重复）
 we-sf render scene.pkg -o out.png --effect-backend waterwaves:cpu
 we-sf render scene.pkg -o out.png --list-decisions     # 把决策记录打到 stderr
+npm run gpu-parity -- --only 3461168300 --out parity.json   # CPU/GPU 逐效果能力边界
 ```
+
+**GPU 能力边界（实测）**：GPU 适配层目前只覆盖**按名字猜到的单 pass GLSL 效果**；
+`effect.json` 数据通路的多 pass 效果（如 `bloom`、`blurprecise`、`bokeh_blur`）不会被 GPU 接手。
+用 `gpu-only` 可以把这个边界显式化：拿不到 GPU 产出的效果会被**跳过并记录原因**，
+而不是静默回退 CPU —— 下游据此决定"这个效果是只走 CPU、还是干脆不要"。
 
 设计约定（与实时渲染路线 `webwallgl` 的对比）：
 

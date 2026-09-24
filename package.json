@@ -44,7 +44,8 @@
     "test": "node test/units.mjs",
     "units": "node test/units.mjs",
     "smoke": "node test/smoke.mjs",
-    "survey": "node test/survey.mjs"
+    "survey": "node test/survey.mjs",
+    "gpu-parity": "node test/gpu-parity.mjs"
   },
   "dependencies": {
     "@shaderfrog/glsl-parser": "^7.0.1",
