@@ -275,11 +275,18 @@ function installEffectJson(proto) {
     const combos = {};
     for (const [k, v] of Object.entries(chain.combos)) combos[k] = comboStr(v);
     const warn = [];
+    let fragX = p.fragX, vertX = p.vertX || null;
+    // 下游 shaderPatch：数据通路的 pass 着色器同样允许覆写（key = 材质 shader stem）。
+    // 有了它就能对单个 pass 做二分定位（例如把 gaussian 的某分支直接改成返回某槽位采样）。
+    if (this._applyShaderPatch && p.shaderStem) {
+      fragX = this._applyShaderPatch(p.shaderStem, fragX, 'fragment');
+      if (vertX) vertX = this._applyShaderPatch(p.shaderStem, vertX, 'vertex');
+    }
     let compiled;
     try {
       compiled = compileGlsl({
-        fragSource: p.fragX,
-        vertSource: p.vertX || null,
+        fragSource: fragX,
+        vertSource: vertX,
         combos,
         resolveInclude: def.resolveInclude,
         onWarn: (x) => warn.push(x),
