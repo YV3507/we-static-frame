@@ -146,12 +146,12 @@ export const atan2 = (y, x) => (typeof y === 'number' ? Math.atan2(y, x) : y.map
 export const rsqrt = inversesqrt;                       // HLSL rsqrt = GLSL inversesqrt
 export const log2 = (x) => (typeof x === 'number' ? Math.log2(x) : x.map((v) => Math.log2(v)));
 export const exp2 = (x) => (typeof x === 'number' ? 2 ** x : x.map((v) => 2 ** v));
-export const sign = (x) => (typeof x === 'number' ? Math.sign(x) : x.map((v) => Math.sign(v)));
-export const sin = (x) => (typeof x === 'number' ? Math.sin(x) : x.map((v) => Math.sin(v)));
-export const cos = (x) => (typeof x === 'number' ? Math.cos(x) : x.map((v) => Math.cos(v)));
-export const tan = (x) => (typeof x === 'number' ? Math.tan(x) : x.map((v) => Math.tan(v)));
-export const asin = (x) => (typeof x === 'number' ? Math.asin(x) : x.map((v) => Math.asin(v)));
-export const acos = (x) => (typeof x === 'number' ? Math.acos(x) : x.map((v) => Math.acos(v)));
+export const sign = unaryNum('sign', Math.sign);
+export const sin = unaryNum('sin', Math.sin);
+export const cos = unaryNum('cos', Math.cos);
+export const tan = unaryNum('tan', Math.tan);
+export const asin = unaryNum('asin', Math.asin);
+export const acos = unaryNum('acos', Math.acos);
 export function atan(x, y) {
   if (y === undefined) return typeof x === 'number' ? Math.atan(x) : x.map((v) => Math.atan(v));
   // P1-40: atan(y, x) 双参向量重载逐分量 (此前 Math.atan2(vec,vec) → NaN)
@@ -295,7 +295,19 @@ export function _discard() {
   throw DISCARD;
 }
 
-// ── WE 引擎 intrinsic ──
+// 逐分量一元函数：**参数类型不符时报出实际类型**，而不是 V8 那句
+// "x.map is not a function"（看不出是哪个值、什么类型 —— issue #2 就卡在这里：
+// lens_flare_sun 的 `sin(noise(...)*16.)` 报 x.map，但看不出 noise 返回了什么）。
+function unaryNum(name, fn) {
+  return (x) => {
+    if (typeof x === 'number') return fn(x);
+    if (x && typeof x.map === 'function') return x.map((v) => fn(v));
+    let preview;
+    try { preview = JSON.stringify(x); } catch { preview = String(x); }
+    throw new Error(name + ': 期望 number 或向量，收到 ' + (x === null ? 'null' : typeof x)
+      + (preview !== undefined ? ' ' + String(preview).slice(0, 120) : ''));
+  };
+}
 export const M_PI = 3.14159265359;
 export const M_PI_HALF = 1.57079632679;
 export const M_PI_2 = 6.28318530718;
