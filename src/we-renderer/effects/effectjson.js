@@ -258,6 +258,7 @@ function installEffectJson(proto) {
       if (DUMP) this.log('FX-DUMP ' + name + ' pass' + p.index
         + ' → ' + (p.target || '(direct)') + ' ' + out.width + 'x' + out.height
         + (rtDef ? ' fmt=' + (rtDef.format || '?') + ' scale=' + (rtDef.scale != null ? rtDef.scale : 1) : '')
+        + ' binds=' + ((this._fxJsonLastBinds || []).join(','))
         + ' ' + summarizeRgba(out));
     }
     if (!result) {
@@ -302,6 +303,8 @@ function installEffectJson(proto) {
       if (rts.has(ref)) { textures[k] = rts.get(ref); continue; }
       textures[k] = (typeof ref === 'string' && ref) ? this.loadTexture(ref) : null;
     }
+    // 取证用：把本 pass 实际绑到的槽位尺寸留给外层 DUMP 行（textures 是本函数局部量）
+    if (DUMP) this._fxJsonLastBinds = textures.map((tx, k) => (tx && tx.width ? k + ':' + tx.width + 'x' + tx.height : k + ':null'));
     let u;
     try {
       u = buildUniforms(compiled.uniforms, constants, {
