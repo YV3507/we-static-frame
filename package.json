@@ -41,6 +41,8 @@
     "node": ">=18"
   },
   "scripts": {
+    "test": "node test/units.mjs",
+    "units": "node test/units.mjs",
     "smoke": "node test/smoke.mjs",
     "survey": "node test/survey.mjs"
   },

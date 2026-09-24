@@ -38,6 +38,34 @@ import { scratchGet, scratchRecallAll, SCRATCH_U8 } from './effects/_scratch.js'
 // 可选分阶段耗时剖析 (DSH_WE_PROFILE=1; 默认关闭时 profTime 直接透传, 零开销)
 import { profAdd, profTime, profileEnabled } from './profile.js';
 
+/**
+ * weAssetsDir 语义统一 —— 两种入参都接受，一律归一到「WE 安装根」。
+ *
+ * 背景（实测抓出来的**静默错配**）：
+ *   镜像内部所有引擎资产回退点都写成 `path.join(weAssetsDir, 'assets', rel)`
+ *   （core.js 的 readJson/readText/loadTexture 全局回退、glsl/material.js 的 shader 源码与
+ *   #include、glsl/integration.js 的 effects 目录、effects/effectjson.js 的 include），
+ *   即**假定 weAssetsDir = WE 安装根**；而对外文档 / CLI / locateWeAssets() 传的是
+ *   `<WE>/assets` 本身 ⇒ 全部拼成 `<WE>/assets/assets/...`（不存在）⇒ 回退静默落空：
+ *     · 每个场景的 genericimage* 材质程序都退回"默认 blit"（实测 16/16 场景命中）；
+ *     · `#include "common.h" / "common_blending.h"` 解析为空 ⇒ ApplyBlending / M_PI_2
+ *       等内置报 "is not defined" ⇒ 整条效果被丢弃。
+ *   实测（同一场景 480x270，传 `<WE>/assets` vs 传 `<WE>`）：降级 1 条 → 0 条，
+ *   且 3486806915 / 3641860575 / 3629379075 / 3461168300 的像素确实不同。
+ *
+ * 判定按**内容**而非目录名：`<dir>/assets/shaders` 存在 ⇒ dir 已是根；
+ * 否则 `<dir>/shaders` 存在 ⇒ dir 就是 assets，取其父目录。两者都不匹配时原样返回
+ * （不猜测，保持旧行为）。
+ */
+export function normalizeWeAssetsDir(dir) {
+  if (!dir || typeof dir !== 'string') return dir || null;
+  try {
+    if (fs.existsSync(path.join(dir, 'assets', 'shaders'))) return dir;      // 已是安装根
+    if (fs.existsSync(path.join(dir, 'shaders'))) return path.dirname(dir);  // 传的是 assets/
+  } catch { /* 路径不可读 → 原样返回，由调用方的日志暴露 */ }
+  return dir;
+}
+
 export class SceneRenderer {
   constructor(pkgPath, opts = {}) {
     this.pkgPath = pkgPath;
@@ -83,8 +111,14 @@ export class SceneRenderer {
     this.particleCache = new Map();
     // 缺失纹理 → 外部 PNG 贴图映射 (已从 pkg 提取的粒子贴图)
     this.assetDir = opts.assetDir || null;
-    // WE 全局 assets 目录 (util/noise 等全局纹理)
-    this.weAssetsDir = opts.weAssetsDir || null;
+    // WE 全局 assets 目录 (util/noise 等全局纹理)。
+    // 本文件内部一律按「WE 安装根」拼 `<root>/assets/...`（官方 defaultprojects 的部署形态），
+    // 而对外 API / CLI / locateWeAssets() 传的是 `<WE>/assets` 本身 —— 两种都接受，见
+    // normalizeWeAssetsDir()。**不要绕过它直接读 opts.weAssetsDir**。
+    this.weAssetsDir = normalizeWeAssetsDir(opts.weAssetsDir);
+    if (opts.weAssetsDir && this.weAssetsDir !== opts.weAssetsDir) {
+      this.log('weAssetsDir 归一: ' + opts.weAssetsDir + ' → ' + this.weAssetsDir + ' (内部按 WE 安装根拼 assets/)');
+    }
     // CPU degraded 通道 (与 GL gate mark 同一结构 {object, feature, action}): dev 线
     // GLSL/效果栈移植后其静默降级点会调用 this._degraded(...); 未提供回调时零行为。
     this.onDegraded = typeof opts.onDegraded === 'function' ? opts.onDegraded : null;

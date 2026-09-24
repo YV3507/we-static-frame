@@ -8,8 +8,10 @@
  *   renderFrame({ input, width, height, time, weAssetsDir, videoFrames, gpuAccel, warm })
  *     → { png, width, height, time, sceneSrc, ms }
  *   · input          `scene.pkg` 路径，或含 scene.json/project.json 的场景目录
- *   · weAssetsDir    Wallpaper Engine 安装目录下的 `assets/`（官方 shader / material / model
- *                    / particle / scripts）。**必须提供**才能还原官方效果链；见 locateWeAssets()
+ *   · weAssetsDir    Wallpaper Engine 的官方 assets（shader / material / model / particle
+ *                    / scripts）。**两种写法都接受**：`<WE 安装目录>/assets`（locateWeAssets()
+ *                    的返回形式，推荐）或 `<WE 安装目录>` 本身 —— 内部按内容自动归一。
+ *                    不提供也能渲染，但官方效果链会退化（见 README「已知限制」）。
  *   · videoFrames    可选：场景内嵌视频纹理的预抽帧 { [纹理路径]: Uint8Array }，由调用方负责
  *                    抽帧（主插件用 ffmpeg；独立使用时可以不传 ⇒ 跳过视频纹理）
  *   · gpuAccel       可选：效果链走 WebGL（需要 supreium-headless-gl + x64）
@@ -67,7 +69,12 @@ export async function renderFrame(opts = {}) {
 
   const canvas = renderer.render();
   const png = encodePng(canvas.w, canvas.h, canvas.data);
-  return { png, width: canvas.w, height: canvas.h, time: time == null ? 0 : time, sceneSrc, ms: Date.now() - t0 };
+  return {
+    png, width: canvas.w, height: canvas.h, time: time == null ? 0 : time, sceneSrc,
+    ms: Date.now() - t0,
+    // 归一后的实际生效值（入参可能是 <WE>/assets，而内部按 <WE> 根拼 assets/）
+    weAssetsDir: renderer.weAssetsDir || null,
+  };
 }
 
 /** 便捷：渲染并写出 PNG 文件。 */
