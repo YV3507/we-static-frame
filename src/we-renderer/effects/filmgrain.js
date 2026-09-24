@@ -10,9 +10,32 @@ export const fx = {
         const mode = combos.BLENDMODE != null ? Number(combos.BLENDMODE) : 12; // 默认 softlight
         // P1-17: GREYSCALE 宽兼容 (字符串 '1' 与 1 等价, 旧 === 1 双失效)
         const greyscale = combos.GREYSCALE != null ? Number(combos.GREYSCALE) : 1;
-        const noiseAlpha = getVal(c, 'ui_editor_properties_strength', 2);
-        const noisePower = getVal(c, 'ui_editor_properties_power', 0.5);
-        const noiseScale = getVal(c, 'ui_editor_properties_scale', 10);
+        // ── 参数名: 官方 shader 把 uniform 映射到**材质名**，实例就按材质名给值 ──────────
+        //   filmgrain.frag: uniform float g_NoiseAlpha; // {"material":"strength", …}
+        //                   uniform float g_NoisePower; // {"material":"exponent", …}
+        // 而本内核原先只读 `ui_editor_properties_*`（那是**编辑器 UI 的标签键**，不是材质名）。
+        // 实测两处后果（issue 现象: 与原生 WE 不符）:
+        //   · 3641860575 给 strength=0.31 → 内核回落默认 2（噪声强度放大 6.5 倍）
+        //   · 3641860575 给 exponent=5    → 内核回落默认 0.5（pow 的指数错一个量级）
+        //   · 3690417937 给 scale=4       → 内核回落默认 10（噪声平铺密度错）
+        // 对照取证: 把官方 GLSL 路径也改成内核实际用的 (2 / 0.5)，72.3% 的像素差异收敛到 0.0%
+        //          ⇒ 参数名就是主因（脚本 .test-tmp/fg-diverge.mjs）。
+        // 两种键都读（材质名优先），兼容"按编辑器标签写值"的壁纸。
+        const pick = (shortName) => {
+          const v = getVal(c, shortName, undefined);
+          if (v !== undefined && v !== null) return v;
+          return getVal(c, 'ui_editor_properties_' + shortName, undefined);
+        };
+        // 数值归一: shader 元注释的 default 是数值, 实例值可能是数字或数字字符串
+        // （如 {"value":4}）；非法值回落 shader default。
+        const num = (v, d) => {
+          if (v == null || v === '') return d;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : d;
+        };
+        const noiseAlpha = num(pick('strength'), 2);
+        const noisePower = num(pick('exponent'), 0.5);
+        const noiseScale = num(pick('scale'), 10);
         const tex1 = pass.textures && pass.textures[1] ? this.loadTexture(pass.textures[1]) : this.loadTexture('util/noise');
         // P1-17: MASK 同宽兼容 (库内其余效果均 '1'||1 双判)
         const hasMask = combos.MASK === '1' || combos.MASK === 1;
