@@ -156,7 +156,10 @@ function stripInQualifiers(src) {
 // 引用 g_Texture0, 而 blurradial/shine gaussian 的 uniform 声明在 #include
 // 之后 → 把顶层 (非 #if 条件内) 的 uniform 声明行提到源码最前。
 function hoistTopLevelUniforms(src) {
-  const lines = src.split('\n');
+  // 归一换行: 工坊 shader 多为 CRLF。按行处理时行尾残留的 '\r' 会让**锚定**正则
+  // （/^…$/）静默失配 —— 本函数原先靠非锚定写法侥幸可用，但任何按行精确匹配的
+  // 扩展（例如后续要按声明类型/名字改写 varying）都会踩坑。统一成 '\n' 再处理。
+  const lines = src.replace(/\r\n?/g, '\n').split('\n');
   const decls = [];
   const rest = [];
   let ifDepth = 0;
