@@ -55,7 +55,23 @@ const GPU_EFFECT_FAIL_LIMIT = 2;
 let _gpuLastFailEffect = null;
 
 // 诊断计数 (gpu-diag.log / profile 报告用)
-const stats = { used: 0, failed: 0, fallback: 0, unavailable: 0 };
+const stats = { used: 0, failed: 0, fallback: 0, unavailable: 0, degenerate: 0 };
+
+/**
+ * 图像是否"整幅同一 RGBA 值"（抽样判定，与 effects.js 退化保护同一口径）。
+ * 用于 GPU 单效果输出兜底：整幅单色且输入不是 ⇒ 判定 GPU 未正确执行。
+ */
+function isFlatRgba(m) {
+  if (!m || !m.rgba || !m.width || !m.height) return true;
+  const n = m.width * m.height;
+  const st = Math.max(1, Math.floor(n / 128));
+  const r = m.rgba[0], g = m.rgba[1], b = m.rgba[2], a = m.rgba[3];
+  for (let i = 0; i < n; i += st) {
+    const q = i * 4;
+    if (m.rgba[q] !== r || m.rgba[q + 1] !== g || m.rgba[q + 2] !== b || m.rgba[q + 3] !== a) return false;
+  }
+  return true;
+}
 
 export function gpuAdapterStats() {
   return {
@@ -69,7 +85,7 @@ export function resetGpuAdapter() {
   _gpuState = 'unknown';
   _gpuFailStreak = 0;
   _gpuEffectFails.clear();
-  stats.used = 0; stats.failed = 0; stats.fallback = 0; stats.unavailable = 0;
+  stats.used = 0; stats.failed = 0; stats.fallback = 0; stats.unavailable = 0; stats.degenerate = 0;
 }
 
 export function installGpuAdapter(proto) {
@@ -211,6 +227,19 @@ export function installGpuAdapter(proto) {
       });
       // 尺寸必须一致: 不一致说明该效果会改变图层尺寸, GPU 单 pass 不适用 → 回退 CPU
       if (!out || !out.rgba || out.width !== img.width || out.height !== img.height) return null;
+      // ── 输出退化兜底（GPU 侧的"早失败"保护）──────────────────────────────
+      // 为什么需要: GPU 路径绕过 CPU 编译，于是某些在 CPU 侧**编译期就失败**（根本不会跑）
+      // 的 shader 会在 GPU 上真的执行并产出**整幅单色**结果。它们会被上层退化保护拦下——
+      // 但那条判据是 `输出整幅单色 且 输入不是整幅单色`，当**输入本身也是单色**时（纯色层、
+      // 全屏后期层）判据失效，退化输出会被当成正常结果应用（实测 auto_sway 在 GPU 上产出
+      // 整幅纯黑、平均亮度 0.0）。
+      // 这里在**单效果**层面加一道同样粗糙但有效的兜底：输出整幅单色而输入不是 ⇒ 视为
+      // GPU 未能正确执行，返回 null 交给 CPU 路径（CPU 若也做不出来，退化保护照旧兜住）。
+      if (isFlatRgba(out) && !isFlatRgba(img)) {
+        stats.degenerate++;
+        this.log('GPU 输出整幅单色（输入不是）→ 判定 GPU 未正确执行该效果, 回退 CPU: ' + (name || '?'));
+        return null;
+      }
       stats.used++;
       _gpuFailStreak = 0; // 成功即清零 (偶发失败不累积)
       if (name != null) _gpuEffectFails.delete(String(name)); // 该效果恢复正常 → 解除拉黑
