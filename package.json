@@ -1,7 +1,7 @@
 {
   "name": "we-static-frame",
   "version": "0.1.0",
-  "description": "Standalone static-frame renderer for Wallpaper Engine scene wallpapers (scene.pkg) — extracted from dsh-plugin-wallpaper-engine; usable as a library or CLI, independent of any host.",
+  "description": "Standalone static-frame renderer for Wallpaper Engine scene wallpapers (scene.pkg): render offline to a PNG as a library or CLI, with no host dependency. Originally extracted from dsh-wallpaper-engine, now developed independently.",
   "type": "module",
   "license": "MIT",
   "author": "elysia395",

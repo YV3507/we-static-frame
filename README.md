@@ -6,12 +6,16 @@
 [![Wallpaper Engine](https://img.shields.io/badge/Wallpaper%20Engine-scene.pkg-1b2838.svg)](https://www.wallpaperengine.io/)
 
 把 Wallpaper Engine 的场景壁纸（`scene.pkg` / 场景目录）**离线渲染成一张 PNG** 的独立实现。
-从 [`dsh-plugin-wallpaper-engine`](https://github.com/YV3507/dsh-wallpaper-engine) 的静态帧链整块搬出，
-**不依赖任何宿主**（无 DSH、无插件、无 HTTP 服务）：既能当库调用，也能当命令行工具用。
+**不依赖任何宿主**（无桌面端、无插件、无 HTTP 服务）：既能当库调用，也能当命令行工具用。
 
 > **为什么存在**：实时渲染（[`webwallgl`](https://github.com/oneincase/webwallgl)）在**有 GPU** 的机器上是主路径；
-> 静态帧的定位是**虚拟机 / 远程端 / 无 WebGL2** 时的取舍方案 —— 也就是"没有实时渲染可用"时的兜底。
-> 把它独立出来，是为了让渲染器本身能独立发版、独立评测，同时让主插件不必继续内嵌这 1MB 实现。
+> 静态帧的定位是**虚拟机 / 远程端 / 无 WebGL2 / 需要批量出图**时的取舍方案 —— 也就是"没有实时渲染可用"时的兜底。
+> 它独立发版、独立评测，边界与取舍由本仓库自己决定。
+
+> **出处（历史）**：本仓库初始从 [`dsh-wallpaper-engine`](https://github.com/YV3507/dsh-wallpaper-engine)
+> 的静态帧链抽出（fork 点 `f716df0`，MIT），此后在这里独立演进，**不再与上游互相同步** ——
+> 本仓库是该实现的发布源，缺陷与需求提到[本仓库 Issues](https://github.com/YV3507/we-static-frame/issues)。
+> 上游仓库是否仍包含一份静态帧渲染的副本，以其自身说明为准。
 
 ## 依赖
 
@@ -22,7 +26,7 @@
   Linux `~/.steam` / `~/.local/share/Steam` / Flatpak / snap、macOS `~/Library/Application Support/Steam`）。
   **这些资产是 WE 自带的，不随本仓库分发。**
 - 可选：`supreium-headless-gl`（x64）—— 效果链走 WebGL 的 GPU 加速（`--gpu`）。缺失、架构不符或驱动异常即自动回退 CPU。
-- 可选：场景内嵌**视频纹理**需要调用方先抽帧（主插件用 ffmpeg），通过库参数 `videoFrames` 传入；CLI 暂不支持，
+- 可选：场景内嵌**视频纹理**需要调用方先抽帧（例如用 ffmpeg），通过库参数 `videoFrames` 传入；CLI 暂不支持，
   这类场景会渲染成**空白帧**（见下方"已知限制"）。
 
 ## 用法
@@ -54,27 +58,28 @@ const { png, width, height, ms, degraded, blank } = await renderFrame({
 if (blank || degraded.length) console.warn('画面与官方不一致', degraded);
 ```
 
-## 目录结构 / 代码来源契约
+## 目录结构
 
 ```
-src/**                  ← 渲染器本体：搬自主插件 dsh-plugin-wallpaper-engine 的静态帧链（64 文件）
-src/render.js           ← 本仓库的库入口（renderFrame / renderToFile / locateWeAssets）
-src/cli.js              ← 本仓库的 CLI（we-sf）
+src/**                  ← 渲染器本体（效果链 / GLSL 运行时 / GPU 适配 / 场景脚本），可在此直接修改
+src/render.js           ← 库入口（renderFrame / renderToFile / locateWeAssets）
+src/cli.js              ← CLI（we-sf）
 test/smoke.mjs          ← 冒烟：能拿到场景就渲染一张并校验 PNG 头（拿不到则 SKIP）
 test/survey.mjs         ← 普查：本机全库逐个渲染，汇总空白帧 / 降级 / 耗时（人读表格 + JSON）
 test/gpu-parity.mjs     ← CPU/GPU 对拍：`gpu:'auto'` + 全部效果 `gpu-only`，
                           用 decisions[] 测出「哪些效果 GPU 能跑、哪些跑不了及原因」
 ```
 
-**`src/**` 的约定（vendored + 本地补丁）**：这部分代码**来源**是主插件的静态帧链，但本仓库是它的
-**唯一发布源**——允许在此直接修 bug 并独立发版。改动请遵守两条：
+**`src/**` 的约定（单一实现）**：这是渲染器的**唯一**实现与发布源，**没有需要对齐的上游副本** ——
+直接在这里修 bug、加能力、独立发版即可。两条约束仍然保留：
 
-1. **保持接口与语义与主插件一致**：这里的修复应当能被主插件反向取用（改动落点尽量小而集中，
-   并在提交信息里写清"修的是什么、怎么验证"）。
-2. **不要在两边各写一份实现**：主插件若要覆盖式同步 `src/**`，必须把本仓库的新提交一并带走
-   （历史契约见主插件 `scripts/sync-webwallgl.mjs` 与 `.upstream.json` 的 `repo / name / version / commit / dirty / files`）。
+1. **不反向依赖任何宿主**：`src/**` 里不允许出现 dsh-wallpaper-engine（或其它宿主）专有模块的
+   import —— 渲染器只依赖 Node 内置模块与 `package.json` 里声明的依赖。
+2. **改动落点尽量小而集中**，并在提交信息里写清"修的是什么、怎么验证"（本仓库既有惯例）。
 
-反向约束不变：**本仓库不反向依赖主插件**，`src/**` 里不允许出现主插件专有模块的 import。
+出处只作历史记录保留：`src/**` 的初始版本抽自 dsh-wallpaper-engine 的静态帧链（fork 点 `f716df0`）。
+那条上游同步链路（`scripts/sync-webwallgl.mjs` / `.upstream.json`）**不再对本仓库生效**：
+`src/**` 以本仓库为准，不要用上游的副本覆盖它。
 
 ## 下游决策接口（逐效果 / GPU）
 
@@ -157,15 +162,19 @@ npm run gpu-parity -- --only 3461168300 --out parity.json   # CPU/GPU 逐效果�
 
 ## 明确不做（边界）
 
-- 不做缓存 / 变体档位 / `.fb.` 兜底 / 预热调度 / 设置与 UI —— 那些是**宿主职责**，留在主插件。
+本仓库只负责"把场景渲染成一帧"这一层，**宿主关注点一律不做**：
+
+- 不做缓存 / 变体档位 / `.fb.` 兜底 / 预热调度 / 设置与 UI —— 这些属于调用方（谁长期持有进程、谁决定复用哪一帧）。
 - 不做进程派发与 IPC（worker / fork / GPU node 探测）—— 同上。
-  （`src/scene-render-worker.mjs`、`src/scene-prewarm.js` 是随镜像带过来的宿主侧文件，本仓库不调用它们。）
-- 不做"用 WebWallGL 实时渲染器截帧"（那是另一条路线：GPU 侧由 webwallgl + 主插件的缓存回填承担）。
+  （`src/scene-render-worker.mjs`、`src/scene-prewarm.js` 是移植时一并带过来的**宿主侧遗留文件**，
+  本仓库不调用它们；保留只为与出处版本 diff 时不丢上下文，不要在此基础上继续扩展。）
+- 不做"用 WebWallGL 实时渲染器截帧"（那是另一条路线：实时渲染 + 缓存回填，与本仓库的离线单帧不重叠）。
 
 ## 现状与待办
 
-- 采样时刻选点（"t=2.5 可能是空白帧 ⇒ 试更晚时刻"）与度量口径目前仍在主插件的 worker 里；
-  将来若确认它属于"渲染"而非"宿主策略"，可迁移到这里（迁移前不要在两处各写一份）。
+- 采样时刻选点（"t=2.5 可能是空白帧 ⇒ 试更晚时刻"）与空白帧度量口径**本仓库尚未提供**：
+  `src/scene-render-worker.mjs` 里有一份宿主侧实现，但本仓库不调用它；将来若确认它属于"渲染"
+  而非"宿主策略"，应当在这里实现一份，而不是让调用方各写一份。
 - `--gpu` 的实际收益只在**效果链**上，且**取决于场景**：效果占比高的场景实测 1.8×–4.4×，
   效果少或触发熔断的场景会持平甚至变慢 —— 非效果段仍是 CPU。
 - **已知残余降级**（本地 16 场景实测，2026-02；都已上报，不会静默）：
@@ -184,4 +193,4 @@ npm run gpu-parity -- --only 3461168300 --out parity.json   # CPU/GPU 逐效果�
 
 ## 许可证
 
-[MIT](LICENSE)。渲染器实现取自 [`dsh-plugin-wallpaper-engine`](https://github.com/YV3507/dsh-wallpaper-engine)（同为 MIT）。
+[MIT](LICENSE)。渲染器实现的初始版本取自 [`dsh-wallpaper-engine`](https://github.com/YV3507/dsh-wallpaper-engine)（同为 MIT）。

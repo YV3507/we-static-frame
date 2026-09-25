@@ -1,8 +1,8 @@
 /**
  * we-static-frame —— 独立可用的静态帧渲染入口（库）。
  *
- * 这是**新写的适配层**，不属于从主插件镜像过来的 `src/**`（那部分是逐字节搬运的
- * 渲染器本体，禁止手改；见 README 的"搬运契约"）。
+ * 本文件是渲染器对外的适配层（`src/**` 的其余部分是渲染器本体，同为本仓库的
+ * 唯一实现与发布源，可直接修改）。
  *
  * 契约：
  *   renderFrame({ input, width, height, time, weAssetsDir, videoFrames, gpuAccel, warm })
@@ -13,7 +13,7 @@
  *                    的返回形式，推荐）或 `<WE 安装目录>` 本身 —— 内部按内容自动归一。
  *                    不提供也能渲染，但官方效果链会退化（见 README「已知限制」）。
  *   · videoFrames    可选：场景内嵌视频纹理的预抽帧 { [纹理路径]: Uint8Array }，由调用方负责
- *                    抽帧（主插件用 ffmpeg；独立使用时可以不传 ⇒ 跳过视频纹理）
+ *                    抽帧（例如用 ffmpeg；不传 ⇒ 跳过视频纹理）
  *   · gpuAccel       可选：效果链走 WebGL（需要 supreium-headless-gl + x64）。
  *                    等价于 gpu:'auto'；更细的控制见下。
  *   · gpu            可选：'auto'（默认）| 'off' | 'force' | { mode, failStreakLimit,
@@ -102,7 +102,7 @@ export async function renderFrame(opts = {}) {
     ...policyOpts,
   });
 
-  // 块行并行预解码（与主插件 worker 同序：构造 → 预热 → render）。
+  // 块行并行预解码（顺序固定：构造 → 预热 → render）。
   // 失败/未启用只是少预热若干纹理，像素不变。
   if (warm) {
     try {
@@ -190,7 +190,7 @@ export function steamRootCandidates() {
   return [...new Set(roots)];
 }
 
-/** WE 安装目录下的 assets 定位（独立实现；主插件有更完整的 Steam 库解析，见其 locateWallpaperEngineP）。 */
+/** WE 安装目录下的 assets 定位（本仓库自带的精简实现；出处版本的 locateWallpaperEngineP 覆盖更多 Steam 库布局，定位失败时可参考）。 */
 export function locateWeAssets() {
   const env = process.env.WE_ASSETS || process.env.DSH_WE_ASSETS;
   if (env && existsSync(join(env, 'shaders'))) return env;
