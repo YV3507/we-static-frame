@@ -172,6 +172,34 @@ we_vtc = v_TexCoord;
 v_TexCoord.y += x;   →   we_vtc.y += x;
 ```
 
+## 第 9 轮：多 pass 留 GPU 这条路的**前置条件尚未成立**（做之前必读）
+
+动手前先验证"这条路在本机场景到底有没有被走到"，结论是**没有**：
+
+```
+3641860575 (GPU=auto) 实测
+  bokeh_blur → GLSL shader 未找到 → 走数据通路 → 输出退化被丢弃 → 回退 CPU
+  gpuStats: used=23 failed=9 degenerate=2
+            blacklisted=["____________________"]      ← 编译失败拉黑（同类 shader 20 个实例）
+            degenBlacklisted=["texture_override"]    ← 退化兜底拉黑
+```
+
+也就是说：**这个场景里数据通路的多 pass GPU 效果根本没在跑**（被拉黑后走 CPU），
+所以"把多 pass 中间 RT 留在 GL 侧"对当前场景**一点收益都没有** —— 它优化的是一段死代码路径。
+真正占时间的仍是 CPU 逐像素解释器（第 8 轮实测 3/4 耗时与输出分辨率无关，就来自这里）。
+
+### 若要做，真正的成本点在这两处（已定位，未改）
+
+`gl-effect.js::runEffectOnGL` 每个 pass 都做：
+1. `gl.readPixels(...)` 全尺寸回读（中间结果其实下一 pass 还要用，回读纯属浪费）；
+2. **`gl.finish()`** —— 强制 GPU 管线同步，每 pass 一次，是"搬运成本"之外的另一大杀手。
+
+`gl-multipass.js::runMultiPassOnGL` 逐 pass 调 `runEffectOnGL`，于是上面两项**每 pass 都付一遍**；
+7 个 pass 的 bokeh_blur 在 320x180 下 CPU 侧就已 720ms。
+
+**建议次序**：先解开"同类 shader 被拉黑"（`____________________` 20 个实例）
+让多 pass 真的跑起来并能被测量 → 再动 FBO 常驻重构。否则改完无法验证收益。
+
 ## 复现与验证脚本（.test-tmp/，均按 `node <file> [args]` 跑）
 
 | 脚本 | 用途 |
