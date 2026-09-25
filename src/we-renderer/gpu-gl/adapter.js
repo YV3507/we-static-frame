@@ -73,6 +73,38 @@ function isFlatRgba(m) {
   return true;
 }
 
+/** 覆盖率（alpha > 8 的抽样占比）。与 effects.js 退化保护同一口径。 */
+function coverageOf(m) {
+  if (!m || !m.rgba || !m.width || !m.height) return 0;
+  const n = m.width * m.height;
+  const st = Math.max(1, Math.floor(n / 128));
+  let cov = 0, tot = 0;
+  for (let i = 0; i < n; i += st) { tot++; if (m.rgba[i * 4 + 3] > 8) cov++; }
+  return cov / Math.max(1, tot);
+}
+
+/**
+ * GPU 单效果输出是否**可疑**（不可信）—— 两条判据，都必须带 alpha：
+ *
+ *  ① **整幅同一 RGBA**（含"全透明"）：正确效果在"输入不是单色"时不该产出整幅同值。
+ *  ② **覆盖度塌陷**：输出覆盖度 ≈0 而输入本来有覆盖。
+ *
+ * 为什么必须带 alpha（实测踩过）：这些图层常是**纯色层**（输入 RGB 单色、靠 alpha 显形，
+ * 如 `mean=255 cov=100 colors=1`），GPU 退化的形态是**全透明**（alpha=0）而不是"RGB 单色"。
+ * 只比 RGB 会得出"输出仍是单色、与输入同类"的错误结论，于是把退化输出当正常结果放行
+ * （实测 auto_sway 在 GPU 上产出 mean=0/cov=0/colors=1）。
+ */
+function looksDegenerate(out, input) {
+  const sIn = { flat: isFlatRgba(input) };
+  const outFlat = isFlatRgba(out);
+  if (outFlat && !sIn.flat) return '整幅同一 RGBA（输入不是）';
+  const covIn = coverageOf(input), covOut = coverageOf(out);
+  if (covIn > 0.05 && covOut < Math.max(0.01, covIn * 0.25)) {
+    return '覆盖度塌陷 ' + (covIn * 100).toFixed(0) + '%→' + (covOut * 100).toFixed(0) + '%';
+  }
+  return null;
+}
+
 export function gpuAdapterStats() {
   return {
     state: _gpuState, failStreak: _gpuFailStreak, ...stats,
@@ -229,15 +261,15 @@ export function installGpuAdapter(proto) {
       if (!out || !out.rgba || out.width !== img.width || out.height !== img.height) return null;
       // ── 输出退化兜底（GPU 侧的"早失败"保护）──────────────────────────────
       // 为什么需要: GPU 路径绕过 CPU 编译，于是某些在 CPU 侧**编译期就失败**（根本不会跑）
-      // 的 shader 会在 GPU 上真的执行并产出**整幅单色**结果。它们会被上层退化保护拦下——
-      // 但那条判据是 `输出整幅单色 且 输入不是整幅单色`，当**输入本身也是单色**时（纯色层、
-      // 全屏后期层）判据失效，退化输出会被当成正常结果应用（实测 auto_sway 在 GPU 上产出
-      // 整幅纯黑、平均亮度 0.0）。
-      // 这里在**单效果**层面加一道同样粗糙但有效的兜底：输出整幅单色而输入不是 ⇒ 视为
-      // GPU 未能正确执行，返回 null 交给 CPU 路径（CPU 若也做不出来，退化保护照旧兜住）。
-      if (isFlatRgba(out) && !isFlatRgba(img)) {
+      // 的 shader 会在 GPU 上真的执行并产出退化结果（实测 auto_sway: mean=0/cov=0/全透明）。
+      // 它们本应被上层退化保护拦下，但那条判据带"输入本身是单色就豁免"的规则，而这类图层
+      // 恰恰是纯色层（输入 RGB 单色、靠 alpha 显形）⇒ 退化输出会被当成正常结果应用。
+      // 这里在**单效果**层面补一道：判据见 looksDegenerate（整幅同一 RGBA / 覆盖度塌陷，
+      // 两条都带 alpha）。命中即视为 GPU 未能正确执行，返回 null 交给 CPU 路径。
+      const degenWhy = looksDegenerate(out, img);
+      if (degenWhy) {
         stats.degenerate++;
-        this.log('GPU 输出整幅单色（输入不是）→ 判定 GPU 未正确执行该效果, 回退 CPU: ' + (name || '?'));
+        this.log('GPU 输出可疑（' + degenWhy + '）→ 判定 GPU 未正确执行该效果, 回退 CPU: ' + (name || '?'));
         return null;
       }
       stats.used++;

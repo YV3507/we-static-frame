@@ -136,6 +136,10 @@ export function toWebGLSource(source, stage) {
   // shimmer: vec3 shimmerColor = texSample2D(...) 报 dimension mismatch)。
   // 贪婪匹配整行, 捕获 texSample2D 闭合括号 (最后的 `)`), 在其后加 .rgb
   body = body.replace(/(vec3\s+\w+\s*=\s*texSample2D\(.*\))(\s*;)/g, '$1.rgb$2');
+  // DX 宽松向量维度 → GLSL ES 1.0 严格类型（见 truncateToDeclaredDim 注释）。
+  // 启用前提: adapter.js::_tryEffectGpu 的 looksDegenerate 兜底已覆盖
+  // "整幅同一 RGBA（含全透明）+ 覆盖度塌陷"，用于拦下这类效果的运行期退化。
+  body = truncateToDeclaredDim(body, stage);
   // 注入 WE 方言 shim (frag + vert 都需要: mul/frac 等在 vert 也会出现)
   body = WE_SHIM_SOURCE + '\n' + body;
   if (stage === 'fragment') {
@@ -145,6 +149,45 @@ export function toWebGLSource(source, stage) {
     }
   }
   return { source: body };
+}
+
+/** 名字 → 声明的向量维度（只收本文件能静态确定的：uniform / varying / attribute）。 */
+function declaredDimOf(src, name) {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp('(?:uniform|varying|attribute)\\s+(vec[234])\\s+' + n + '\\b').exec(src);
+  return m ? Number(m[1][3]) : 0;
+}
+
+/**
+ * `vecN x = <更高维表达式>;` 的赋值截断（HLSL/DX 宽松语义 → GLSL ES 1.0 严格类型）。
+ *
+ * 报错形态（实测 texture_override.vert）:
+ *   `vec2 scale = g_Texture0Resolution / g_Texture1Resolution;`   // 两侧都是 vec4
+ *   ERROR: '=' : cannot convert from 'highp 4-component vector' to 'highp 2-component vector'
+ * DX 允许这种赋值并按目标维度取前 N 分量，WebGL 直接拒绝 ⇒ 整条效果在 GPU 上编译不过、
+ * 回退 CPU 逐像素解释器。CPU 解释器（glsl/transpile.js::declInit「P1-35」）就是取前 N 分量，
+ * 因此补 `.xy/.rgb` 与 CPU 参考**语义一致**（数值验证: vec4(1,2,3,4)/vec4(1,1,1,1) → (1,1)）。
+ */
+function truncateToDeclaredDim(src, stage) {
+  void stage;
+  const lines = src.split('\n');
+  const out = lines.map((line) => {
+    const m = /^(\s*)(vec[234])\s+([A-Za-z_]\w*)\s*=\s*(.+);(\s*)$/.exec(line);
+    if (!m) return line;
+    const [, indent, type, name, rhs, tail] = m;
+    const want = Number(type[3]);
+    if (/\.\s*[xyzwrgba]{1,4}\s*$/.test(rhs)) return line;
+    if (new RegExp('^\\s*(vec' + want + '|float)\\s*\\(').test(rhs)) return line;
+    let maxDim = 0;
+    for (const id of rhs.matchAll(/(?<![\w.])([A-Za-z_]\w*)/g)) {
+      const d = declaredDimOf(src, id[1]);
+      if (d > maxDim) maxDim = d;
+    }
+    if (!maxDim || maxDim <= want) return line;
+    const sw = want === 2 ? 'xy' : 'rgb';
+    return indent + type + ' ' + name + ' = (' + rhs + ').' + sw + ';' + tail;
+  });
+  return out.join('\n');
 }
 
 // 移除 GLSL ES 3.0 的 `in` 参数限定符 (WebGL1 = ES 1.0 不支持):
