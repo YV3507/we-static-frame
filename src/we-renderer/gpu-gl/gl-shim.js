@@ -101,6 +101,9 @@ export function toWebGLSource(source, stage) {
   // `#include` 之后 → DX 允许后声明, GLSL 报 undeclared identifier。
   // 把顶层无条件 uniform 声明提到最前 (条件 #if 内不移动)。
   body = hoistTopLevelUniforms(body);
+  // 归一到 WebGL 语义: 见 hoistTopLevelUniforms 的说明（保留 varying 声明,
+  // 只把"对它的赋值"重定向到一个提升到文件最前的局部别名 —— 采样语义不变）。
+  body = normalizeWrittenVaryings(body, stage);
   // 官方 godrays/shine cast: `const int sampleCount = N;` 参与 float 运算
   // (sampleCount - 1 / i / sampleDrop)。GLSL ES 1.0 二元运算无 int→float
   // 隐式转换 → 提升声明为 float, 并同步提升以此为边界的循环计数器
@@ -173,6 +176,71 @@ function hoistTopLevelUniforms(src) {
   }
   if (!decls.length) return src;
   return decls.join('\n') + '\n' + rest.join('\n');
+}
+
+/**
+ * 片元里**写** varying 的归一（WE/dx 允许，WebGL/ANGLE 拒绝）。
+ *
+ * 报错形态: `'l-value required (can't modify a varying "v_TexCoord")'`
+ * 实例: geometric_transform.frag 先 `v_TexCoord.y += …` 改坐标再采样；
+ * 这类效果在 GPU 路径整条编译不过 → 回退 CPU 逐像素解释器。
+ *
+ * 做法（关键: **不能**把 varying 声明整体降级成局部变量）:
+ *   1. 保留 `varying T name;` 声明 —— 它之外的地方仍按插值输入读取；
+ *   2. 在文件最前增加局部别名 `T we_v_<name>;`（与 uniform 一同提前）；
+ *   3. 在 `main()` 开头插入 `we_v_<name> = name;`（取插值输入作为初值）；
+ *   4. 把源码里对 `name` 的**赋值目标**改写成别名（整变量/分量/下标三种形态）。
+ * 于是"先改坐标再采样"的语义完全保留（写的是别名，读 `name` 的地方若在写之后
+ * 应当读别名 —— 见下方第 4 步的实现说明），而编译不再碰只读 varying。
+ *
+ * ⚠ 为什么第 1 步不能省: varying 声明原先被 hoistTopLevelUniforms 提到函数之前，
+ * 恰好遮住了"helper 函数写在声明之前"的先声明后使用问题。整体降级为局部变量后
+ * 它不再被提前，helper 里引用会报 undeclared identifier（本轮实测踩过）。
+ */
+function normalizeWrittenVaryings(src, stage) {
+  if (stage !== 'fragment') return src;
+  const body = src.replace(/\r\n?/g, '\n');
+  const declRe = /^[ \t]*varying[ \t]+(vec[234]|float|int)[ \t]+([A-Za-z_]\w*)[ \t]*;[ \t]*$/gm;
+  const targets = [];
+  for (const m of body.matchAll(declRe)) {
+    const [, type, name] = m;
+    if (varyingWritten(body, name)) targets.push({ type, name, alias: 'we_v_' + name });
+  }
+  if (!targets.length) return src;
+  let out = body;
+  // 2) 声明行与"初值赋值行"都要**避开**第 4 步的全局改名：
+  //    · 声明行必须保持 varying 原名字（它是与顶点侧配对的插值输入）；
+  //    · 初值行的左值是别名、右值是 varying 原名 —— 若被改名就成了 `alias = alias` 自引用。
+  //    把两行的整行换成占位符，改名后再还原。
+  const MARK = '\u0001';
+  const stash = [];
+  const stashLine = (line) => { stash.push(line); return MARK + 'S' + (stash.length - 1) + MARK; };
+  for (const t of targets) {
+    // 声明行：内容不变，仅隐藏
+    out = out.replace(new RegExp('^([ \\t]*varying[ \\t]+' + t.type + '[ \\t]+' + t.name + '[ \\t]*;)$', 'm'),
+      (mm) => stashLine(mm));
+    // 初值行：插到 main 开头，同时隐藏
+    out = out.replace(/(\bvoid\s+main\s*\(\s*(?:void)?\s*\)\s*\{)/,
+      (mm) => mm + '\n' + stashLine('\t' + t.alias + ' = ' + t.name + ';'));
+  }
+  // 3) 该 varying 的**全部引用**（读与写）改到别名上，但声明行/初值行已被隐藏。
+  //    为什么要连读一起改: 官方写法是"先改坐标、再用改后的坐标采样"（geometric_transform
+  //    的写在前、采样在后）。只改赋值左侧的话，采样仍读插值原值 ⇒ 与 WE 语义不符。
+  //    别名在 main 开头初始化为同名插值值，因此"写之前"的读同样正确。
+  for (const t of targets) {
+    const n = t.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp('(?<![\\w.])' + n + '(?![\\w])', 'g'), t.alias);
+  }
+  // 4) 还原被隐藏的行
+  out = out.replace(new RegExp(MARK + 'S(\\d+)' + MARK, 'g'), (mm, i) => stash[Number(i)]);
+  const aliasDecls = targets.map((t) => t.type + ' ' + t.alias + ';').join('\n');
+  return aliasDecls + '\n' + out;
+}
+
+/** 片元源码里某个 varying 是否被赋值（整变量 / 分量 / 下标）。 */
+function varyingWritten(src, name) {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('(?<![\\w.])' + n + '\\s*(\\.\\s*[xyzwrgba]{1,4}\\s*)?(\\[[^\\]]*\\]\\s*)?[-+*/]?=(?![=])').test(src);
 }
 
 // 官方 godrays/shine cast shader: `const int sampleCount = N;` 参与 float 运算
