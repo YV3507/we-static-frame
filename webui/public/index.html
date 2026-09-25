@@ -111,6 +111,9 @@
           <label>effects.deny（逗号分隔） <input type="text" id="fxDeny" placeholder="bloom,filmgrain"></label>
         </div>
         <label class="check"><input type="checkbox" id="skipDegenerate" checked> skipDegenerate（关掉则保留退化输出，便于取证）</label>
+        <label>退化负缓存 skipDegenerateAfter（0=关；反复渲染时跳过"连续多轮被丢弃"的效果，省掉纯白做的计算）
+          <input type="number" id="skipDegenAfter" value="1" min="0" max="10">
+        </label>
         <label>统一后端 <select id="backendAll">
           <option value="">（不指定）</option>
           <option value="auto">auto</option>

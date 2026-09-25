@@ -76,6 +76,12 @@ export function normalizePolicy(opts = {}) {
     deny: asSet(eff.deny),
     backend: (eff.backend && typeof eff.backend === 'object') ? { ...eff.backend } : {},
     skipDegenerate: eff.skipDegenerate !== false,      // 默认开：保留既有"输出退化就丢弃"保护
+    // 退化效果的**负缓存**阈值（默认 0 = 关闭，行为与从前逐位一致）：
+    // 某效果连续 N 次渲染都被退化保护判定丢弃，之后直接跳过不再计算。
+    // 为什么：实测 auto_sway 每帧逐像素跑完 1.27Mpx 再被丢弃，占整帧 42%（3486806915 省 9333ms），
+    // 而像素逐字节不变 —— 长驻渲染（WebUI / 多帧）纯属白做。单次渲染的调用方保持默认即可。
+    skipDegenerateAfter: Number.isInteger(eff.skipDegenerateAfter) && eff.skipDegenerateAfter > 0
+      ? eff.skipDegenerateAfter : 0,
     decideEffect: typeof (pol.decideEffect || eff.decideEffect) === 'function' ? (pol.decideEffect || eff.decideEffect) : null,
     decideBackend: typeof pol.decideBackend === 'function' ? pol.decideBackend : null,
     onDecision: typeof (opts.onDecision || eff.onDecision || pol.onDecision) === 'function'

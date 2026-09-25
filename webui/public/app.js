@@ -75,6 +75,8 @@ function buildJob() {
   if (allow.length) effects.allow = allow;
   if (deny.length) effects.deny = deny;
   if (!$('#skipDegenerate').checked) effects.skipDegenerate = false;
+  const sda = Number($('#skipDegenAfter').value);
+  if (Number.isInteger(sda) && sda > 0) effects.skipDegenerateAfter = sda;
   const backends = {};
   for (const [name, b] of Object.entries(s.effectBackend)) if (b) backends[name] = b;
   if (Object.keys(backends).length) effects.backend = backends;

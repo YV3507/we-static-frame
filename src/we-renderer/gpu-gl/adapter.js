@@ -45,18 +45,30 @@ const jsonGpuOff = () => process.env.DSH_WE_NO_FXJSON_GPU === '1';
 let _gpuState = 'unknown';
 let _gpuFailStreak = 0;
 const GPU_FAIL_STREAK_LIMIT = 3;
+// 逐效果拉黑: 效果名 → 连续失败次数。
+// 为什么需要: 熔断原本是"跨效果的连续失败计数"，一个坏 shader 失败 3 次就把**整个进程**的
+// GPU 关掉 —— 实测 3641860575 只成功了 1 个效果就熔断，后面所有能走 GPU 的效果全落回 CPU，
+// 于是"--gpu"反而更慢 (8590ms vs 8093ms)。拉黑让"坏效果"只影响它自己。
+const _gpuEffectFails = new Map();
+const GPU_EFFECT_FAIL_LIMIT = 2;
+// 上一次失败的效果名 —— 用于判定"连续失败"是否真的来自同一个效果（见 _noteGpuFailure）。
+let _gpuLastFailEffect = null;
 
 // 诊断计数 (gpu-diag.log / profile 报告用)
 const stats = { used: 0, failed: 0, fallback: 0, unavailable: 0 };
 
 export function gpuAdapterStats() {
-  return { state: _gpuState, failStreak: _gpuFailStreak, ...stats };
+  return {
+    state: _gpuState, failStreak: _gpuFailStreak, ...stats,
+    blacklisted: [..._gpuEffectFails.entries()].filter(([, n]) => n >= GPU_EFFECT_FAIL_LIMIT).map(([k]) => k),
+  };
 }
 
 /** 测试/LRU 用: 复位探测与熔断状态。 */
 export function resetGpuAdapter() {
   _gpuState = 'unknown';
   _gpuFailStreak = 0;
+  _gpuEffectFails.clear();
   stats.used = 0; stats.failed = 0; stats.fallback = 0; stats.unavailable = 0;
 }
 
@@ -92,16 +104,54 @@ export function installGpuAdapter(proto) {
     return Number.isFinite(n) && n > 0 ? n : GPU_FAIL_STREAK_LIMIT;
   };
 
-  /** 记一次 GPU 失败; 达阈值即熔断。 */
-  proto._noteGpuFailure = function (e) {
+  /**
+   * 记一次 GPU 失败; 达阈值即熔断。
+   *
+   * `name` = 出问题的效果名（可选）。给了就同时记进**逐效果**拉黑表：该效果连续失败
+   * `GPU_EFFECT_FAIL_LIMIT` 次后不再尝试 GPU（后续请求直接走 CPU），但**不影响其它效果**
+   * —— 这正是"一个坏 shader 拖垮整链"的解药（issue #4 的 ③ 建议）。
+   * 没给 name 的调用（如链式执行）只累计全局 streak，行为与从前一致。
+   */
+  proto._noteGpuFailure = function (e, name) {
     stats.failed++;
+    const nm = name == null ? null : String(name);
+    // "连续失败"必须按**同一效果**才算连续：不同效果各自失败一次，语义上是"多个独立缺陷"，
+    // 不是"这个效果反复失败"。若把它们累加，2–3 个坏 shader 就能把整个进程的 GPU 关掉
+    // （issue #4 实测：只成功 1 个效果就熔断，导致 --gpu 反而比纯 CPU 慢）。
+    if (nm != null && nm !== _gpuLastFailEffect) {
+      _gpuFailStreak = 0;
+      _gpuLastFailEffect = nm;
+    }
     _gpuFailStreak++;
+    let quarantined = false;
+    if (nm) {
+      const n = (_gpuEffectFails.get(nm) || 0) + 1;
+      _gpuEffectFails.set(nm, n);
+      if (n === GPU_EFFECT_FAIL_LIMIT) {
+        quarantined = true;
+        this.log('GPU 拉黑效果 ' + nm + '（连续失败 ' + n + ' 次，后续该效果直接走 CPU；其它效果不受影响）');
+      }
+    }
     const limit = this._gpuFailStreakLimit();
-    this.log('GPU 效果失败 (' + _gpuFailStreak + '/' + limit + '): ' + (e && e.message ? e.message : e));
+    this.log('GPU 效果失败 (' + _gpuFailStreak + '/' + limit + ')' + (nm ? ' [' + nm + ']' : '') + ': ' + (e && e.message ? e.message : e));
+    if (quarantined) {
+      // 该效果已被隔离 ⇒ 它以后不再尝试 GPU、不会再产生失败。清零全局计数，让熔断只由
+      // **尚未隔离**的效果触发（否则隔离动作本身还会把它前面的失败留在账上）。
+      _gpuFailStreak = 0;
+      _gpuLastFailEffect = null;
+      this.log('该效果已隔离，全局失败计数清零（熔断只由其它未隔离效果触发）');
+      return;
+    }
     if (_gpuFailStreak >= limit) {
       _gpuState = 'off';
       this.log('GPU 连续失败达阈值 → 熔断, 本次进程内效果链全部回退 CPU');
     }
+  };
+
+  /** 该效果是否已被 GPU 拉黑（连续失败达阈值）。 */
+  proto._gpuEffectBlacklisted = function (name) {
+    if (name == null) return false;
+    return (_gpuEffectFails.get(String(name)) || 0) >= GPU_EFFECT_FAIL_LIMIT;
   };
 
   /**
@@ -118,6 +168,9 @@ export function installGpuAdapter(proto) {
   proto._tryEffectGpu = function (img, ef, name, c, pass, t) {
     if (!this._getGpuBackend()) return null;
     if (!img || !img.width || !img.height || !img.rgba) return null;
+    // 该效果已被拉黑（自己的 shader 在 WebGL 下编译/链接不过）→ 直接走 CPU，
+    // 既省掉重复尝试的开销，也避免它的失败把全局 streak 推向熔断。
+    if (this._gpuEffectBlacklisted(name)) return null;
     let compiled;
     try { compiled = this._compileWorkshopEffect(ef); } catch { return null; }
     // fragPre 缺失 = CPU 侧也没能产出预处理源码 ⇒ 本层不接手 (保守, 宁可走 CPU)
@@ -160,9 +213,10 @@ export function installGpuAdapter(proto) {
       if (!out || !out.rgba || out.width !== img.width || out.height !== img.height) return null;
       stats.used++;
       _gpuFailStreak = 0; // 成功即清零 (偶发失败不累积)
+      if (name != null) _gpuEffectFails.delete(String(name)); // 该效果恢复正常 → 解除拉黑
       return out;
     } catch (e) {
-      this._noteGpuFailure(e);
+      this._noteGpuFailure(e, name);
       return null;
     }
   };

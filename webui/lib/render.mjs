@@ -145,6 +145,11 @@ export function buildRenderOpts(job) {
   if (eff.backend && typeof eff.backend === 'object' && Object.keys(eff.backend).length) effects.backend = eff.backend;
   if (eff.skipDegenerate === false) effects.skipDegenerate = false;
   if (Object.keys(effects).length) opts.effects = effects;
+  // 退化负缓存：反复渲染同一场景时，把"连续多轮被丢弃"的效果直接跳过（省掉纯白做的计算）。
+  // 只在 WebUI 的重复渲染场景下有意义；单次渲染的调用方默认不开启（行为逐位不变）。
+  if (Number.isInteger(eff.skipDegenerateAfter) && eff.skipDegenerateAfter > 0) {
+    opts.effects = { ...(opts.effects || {}), skipDegenerateAfter: eff.skipDegenerateAfter };
+  }
 
   const pol = job.policy || {};
   const policy = {};

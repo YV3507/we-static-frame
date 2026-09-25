@@ -74,6 +74,35 @@ const LIVE_FX_RE = /audio|bars|oscilloscope|visualizer|equalizer|spectrum/i;
 // 成本与画面 —— 用于评估"UI 开关切到主纹理/无效果快速模式"的收益。默认关闭。
 const noFxOn = () => process.env.DSH_WE_NO_FX === '1';
 
+// ── 退化效果的负缓存 (policy.effects.skipDegenerateAfter, 默认 0 = 关闭) ──────────
+// 效果产出"整幅单色/覆盖度塌陷"被退化保护丢弃时，它那一轮的工作**完全白做**。实测
+// auto_sway 在 3486806915 每帧逐像素跑完 1.27Mpx 后被丢弃，占整帧 42%（摘掉省 9333ms）
+// 而像素逐字节不变。长驻渲染（WebUI 反复渲染同一场景）里这就是纯浪费。
+// 这里按**效果名 + 图层**记连续丢弃次数，达到阈值后本轮渲染直接跳过该效果。
+//
+// ⚠ 键必须含图层：同一效果可以在这个图层退化、在另一个图层正常（参数不同）。只按效果名
+// 记会让"某层退化"把其它层的同名效果一起跳过 —— 实测 3641860575 / 3640755971 会因此改像素。
+// 阈值默认 0（关闭），所以单次渲染的既有调用方行为逐位不变。
+const _degenStreak = new Map(); // "图层\u0000效果名" → 连续被丢弃次数
+
+const degenKey = (layer, name) => String(layer == null ? '' : layer) + '\u0000' + name;
+
+/** 该效果是否已进入"稳定退化"名单（由 policy.effects.skipDegenerateAfter 启用）。 */
+function degenerateSkipped(renderer, layer, name) {
+  const n = renderer.policy && renderer.policy.skipDegenerateAfter;
+  if (!n) return false;
+  return (_degenStreak.get(degenKey(layer, name)) || 0) >= n;
+}
+
+/** 记录一次退化丢弃 / 一次正常产出（后者清零该效果在该图层的计数）。 */
+function noteDegenerate(renderer, layer, name, degenerate) {
+  const n = renderer.policy && renderer.policy.skipDegenerateAfter;
+  if (!n) return;
+  const k = degenKey(layer, name);
+  if (degenerate) _degenStreak.set(k, (_degenStreak.get(k) || 0) + 1);
+  else _degenStreak.delete(k);
+}
+
 // 效果链"是否真的产出了内容"的判据 (仅 instanced 纯色层调用方索取, 见 image.js
 // _renderSolidLayer): 输出与输入**逐字节不同**才算该效果真正塑形 (尺寸变化视为不同)。
 // 只看"效果被派发过"不够 — dock 的 user_texture_alpha_overwrite_workaround 每次都
@@ -167,6 +196,21 @@ export function installEffects(proto) {
           const pass = passes[0] || {};
           const c = pass.constantshadervalues || {};
           const combos = pass.combos || {};
+          // 退化负缓存 (policy.effects.skipDegenerateAfter)：该效果连续多轮被退化保护丢弃
+          // ⇒ 本轮直接跳过（它的输出注定被丢掉，算了也是白算）。默认关闭。
+          //
+          // 记成**策略决策**而不是 degraded：这不是新出现的降级，而是"上一轮已经判定过、
+          // 本轮按策略不再重算"。否则 degraded 条数会随策略打开而变多，把 --strict 之类的
+          // 调用方误判成回归；决策记录里有据可查，日志也照打。
+          if (degenerateSkipped(this, o.name != null ? o.name : o.id, name)) {
+            const why = '输出连续多轮退化被丢弃 → 负缓存跳过重算 (effects.skipDegenerateAfter='
+              + this.policy.skipDegenerateAfter + ')';
+            this.log('效果 ' + name + ': ' + why);
+            if (this._reportDecision) {
+              this._reportDecision({ effect: name, layer: o.name != null ? String(o.name) : null, index: ei, action: 'skip', backend: 'auto', reason: why, source: 'policy' });
+            }
+            continue;
+          }
           const __te = profileEnabled() ? performance.now() : 0;
           // 成本主因: 效果内核逐像素跑在**输入纹理**上 (与输出画布分辨率无关)
           if (profileEnabled() && img && img.width && img.height) profPx(name, img.width * img.height);
@@ -397,12 +441,14 @@ export function installEffects(proto) {
                   this.log('效果 ' + name + ': 输出退化 (' + why + '), 已丢弃并保留原图');
                   this._degraded(o.name != null ? String(o.name) : null, 'effect:' + name, '效果输出退化，已丢弃并保留原图');
                   img = __before;
+                  noteDegenerate(this, o.name != null ? o.name : o.id, name, true); // 记一次"白做"
                 }
               }
             }
           }
           // 内容产出上报 (status 只在 instanced 纯色层调用时传入): 本效果真正改变了图像
           // 内容才算"产出" — 被上方退化保护丢弃的效果 (img 已还原成 __before) 不算。
+          if (img !== __before) noteDegenerate(this, o.name != null ? o.name : o.id, name, false); // 正常产出 → 清零
           if (status && !status.produced && img && fxContentDiffers(__before, img)) status.produced = true;
         }
         // _rt_ 图层合成: 若本对象被其它层以 _rt_imageLayerComposite_<id>_a 引用, 保留其
