@@ -34,6 +34,19 @@ ANGLE 报：`'l-value required (can't modify a varying "v_TexCoord")`。
 
 ## 关键坐标（错误行号 ↔ 源码位置）
 
+**先看这条，能省一整轮**：编译错误必须**分步**看（frag 编译 / vert 编译 / link 三步各自的
+`getShaderInfoLog` / `getProgramInfoLog`），否则报错行号会指到你没在读的那份源码上。
+我为此浪费了两轮 —— `texture_override` 的报错一直在 **vert**，而我盯着 316 行的 frag 解读，
+于是"行号对不上"看起来像编译器 bug，其实是我读错了文件。
+复现脚本：`.test-tmp/dbg-stages.mjs <效果名> [scene.pkg]`（分别编译三步并打印完整 log）。
+
+```js
+// gl-effect.js 的 compileShader 只抛 getShaderInfoLog；要分步请自己 createGLContext 后逐个编译
+const gl = createGLContext(64, 64);
+const sh = gl.createShader(gl.VERTEX_SHADER); gl.shaderSource(sh, vert); gl.compileShader(sh);
+gl.getShaderParameter(sh, gl.COMPILE_STATUS); gl.getShaderInfoLog(sh);
+```
+
 GPU 编译报错的行号是**归一后源码**的行号（shim 头约 60 行）：
 - 报 `0:79: 'v_TexCoord': undeclared identifier`（当前提交版）**对应原文件 L18 的写操作**；
 - 该 shader 归一后共 99 行，`varying vec2 v_TexCoord;` 落在 L78。
@@ -44,6 +57,42 @@ GPU 编译报错的行号是**归一后源码**的行号（shim 头约 60 行）
 
 **正确修法（未完成）**：保留 `varying` 声明（供插值读取），只把**片元里对该 varying 的
 赋值**改写到"提升到文件最前"的局部别名上，例如：
+
+## ⚠ 重要否证：「能编译」≠「该启用」（务必先读）
+
+`texture_override` 的 GPU 失败根因已确认在 **vert**：
+
+```glsl
+vec2 scale  = g_Texture0Resolution / g_Texture1Resolution;   // vec4 / vec4 → 赋给 vec2
+vec2 offset = g_TexOffset / g_Texture0Resolution;            // vec2 / vec4 → 运算本身非法
+```
+DX 宽松语义允许（按目标维度取前 N 分量），WebGL 拒绝。
+
+- **语义确实一致**：`glsl/transpile.js::declInit`（P1-35）就是按声明类型取前 N 分量。
+  数值验证：CPU 跑 `vec4(1,2,3,4)/vec4(1,1,1,1)` 赋给 `vec2` → 得到 `(1,1)`，与补 `.xy` 等价。
+- 只对**赋值右侧整体维度可静态确定**的行补 `.xy/.rgb`（不碰 `vec2/vec4` 这类运算级非法写法），
+  全库 GPU 可编译数 **195 → 206（+11）**，`texture_override` 三步全通过。
+
+**但最终没有提交**，因为出现了这个信号：
+
+```
+改前: GPU 模式 降级 6（与 CPU 一致）
+改后: GPU 模式 降级 2      ← 4 个 auto_sway 不再被退化保护拦下
+```
+
+直接测量那 4 个效果的 GPU 输出：**整幅纯黑、平均亮度 0.0（确实退化）**。
+
+⇒ 结论：**编译通过会让某些效果的"早失败"变成"晚失败"**，而退化保护的判据
+（`sa.uniRgba && !sb.uniRgba`）在**整幅纯黑但输入本身单色**时会失效 ⇒ 退化输出被当成正常结果应用。
+CPU 路径之所以看起来"正常"，只是因为它在编译期就失败了、根本没跑（效果=未应用）。
+**这不是"GPU 修好了"，是"把编译期失败推后成了运行期退化且没被拦住"。**
+
+**下一步的正确顺序**（不要跳过）：
+1. 先给 GPU 路径补上与 CPU 侧同强度的**输出退化检查**（或让 `_tryEffectGpu` 在返回前做同样的
+   `stat()` 判据），确保"晚失败"也被拦住；
+2. 再启用维度截断归一，并用"CPU/GPU 输出对照"（而非仅"能否编译"）作为验收门槛；
+3. 验收脚本建议：对每个"新增可编译"的效果，比较 CPU 与 GPU 结果的退化性与像素统计。
+
 
 ```glsl
 // 文件最前（与 uniform 一同提升）
