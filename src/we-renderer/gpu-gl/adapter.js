@@ -51,6 +51,10 @@ const GPU_FAIL_STREAK_LIMIT = 3;
 // 于是"--gpu"反而更慢 (8590ms vs 8093ms)。拉黑让"坏效果"只影响它自己。
 const _gpuEffectFails = new Map();
 const GPU_EFFECT_FAIL_LIMIT = 2;
+// 逐效果"输出不可信"计数（退化兜底拒绝）—— **与上表分开**：这不是 GPU 故障，
+// 因此既不进熔断计数，也不与"编译失败"共用同一张表（两者的处置与语义都不同）。
+const _gpuDegenFails = new Map();
+const DEGEN_EFFECT_LIMIT = 2;
 // 上一次失败的效果名 —— 用于判定"连续失败"是否真的来自同一个效果（见 _noteGpuFailure）。
 let _gpuLastFailEffect = null;
 
@@ -109,6 +113,7 @@ export function gpuAdapterStats() {
   return {
     state: _gpuState, failStreak: _gpuFailStreak, ...stats,
     blacklisted: [..._gpuEffectFails.entries()].filter(([, n]) => n >= GPU_EFFECT_FAIL_LIMIT).map(([k]) => k),
+    degenBlacklisted: [..._gpuDegenFails.entries()].filter(([, n]) => n >= DEGEN_EFFECT_LIMIT).map(([k]) => k),
   };
 }
 
@@ -117,6 +122,7 @@ export function resetGpuAdapter() {
   _gpuState = 'unknown';
   _gpuFailStreak = 0;
   _gpuEffectFails.clear();
+  _gpuDegenFails.clear();
   stats.used = 0; stats.failed = 0; stats.fallback = 0; stats.unavailable = 0; stats.degenerate = 0;
 }
 
@@ -219,6 +225,8 @@ export function installGpuAdapter(proto) {
     // 该效果已被拉黑（自己的 shader 在 WebGL 下编译/链接不过）→ 直接走 CPU，
     // 既省掉重复尝试的开销，也避免它的失败把全局 streak 推向熔断。
     if (this._gpuEffectBlacklisted(name)) return null;
+    // 输出屡次不可信的效果同样不再尝试 GPU（省掉必然被拒的 GPU 往返）
+    if (name != null && (_gpuDegenFails.get(String(name)) || 0) >= DEGEN_EFFECT_LIMIT) return null;
     let compiled;
     try { compiled = this._compileWorkshopEffect(ef); } catch { return null; }
     // fragPre 缺失 = CPU 侧也没能产出预处理源码 ⇒ 本层不接手 (保守, 宁可走 CPU)
@@ -269,12 +277,25 @@ export function installGpuAdapter(proto) {
       const degenWhy = looksDegenerate(out, img);
       if (degenWhy) {
         stats.degenerate++;
-        this.log('GPU 输出可疑（' + degenWhy + '）→ 判定 GPU 未正确执行该效果, 回退 CPU: ' + (name || '?'));
+        // ⚠ **不计入熔断**：GPU 本身工作正常（跑出了结果），只是这个效果的输出不可信。
+        // 若照 `_noteGpuFailure` 记一笔，8 次拒绝就会把全局 streak 推到阈值、把**整条链**
+        // 的 GPU 关掉（实测 texture_override 拒 8 次 → state=off），而它对其它效果毫无影响。
+        // 拉黑也是**逐效果**的：连续 DEGEN_EFFECT_LIMIT 次被拒后不再尝试 GPU，
+        // 免得每个实例都白付一次 GPU 往返。
+        if (name != null) {
+          const nm = String(name);
+          const n = (_gpuDegenFails.get(nm) || 0) + 1;
+          _gpuDegenFails.set(nm, n);
+          if (n === DEGEN_EFFECT_LIMIT) {
+            this.log('GPU 输出屡次不可信 → 拉黑效果 ' + nm + '（连续 ' + n + ' 次），后续直接走 CPU');
+          }
+        }
+        this.log('GPU 输出可疑（' + degenWhy + '）→ 回退 CPU: ' + (name || '?'));
         return null;
       }
       stats.used++;
       _gpuFailStreak = 0; // 成功即清零 (偶发失败不累积)
-      if (name != null) _gpuEffectFails.delete(String(name)); // 该效果恢复正常 → 解除拉黑
+      if (name != null) { _gpuEffectFails.delete(String(name)); _gpuDegenFails.delete(String(name)); } // 恢复正常 → 解除两种拉黑
       return out;
     } catch (e) {
       this._noteGpuFailure(e, name);
