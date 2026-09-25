@@ -449,7 +449,10 @@ export function runEffectOnGL({ fragPre, vertPre = null, u = {}, width, height }
 
   bindAttributes(gl, prog);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  gl.finish();
+  // 注: 此处原先有 gl.finish()。已删除 —— 紧随其后的 readPixels 本身就是隐式同步点
+  // （GL 规范要求 readPixels 在返回前完成所有相关渲染），finish() 只是多付一次空等。
+  // 单 pass 实测（320x180 0.52ms / 1920x1080 3.54ms）里 finish 的开销很小，删它是
+  // "去掉冗余同步"的干净化，不是性能大招；真正的搬运成本在 readPixels 与每 pass 上传。
 
   // ── readPixels 读回 (全分辨率) ──
   // UV 约定核对 (与 CPU renderGlsl 一致): 引擎 y=0 顶行 = a_TexCoord v=0 =
@@ -590,7 +593,7 @@ export function runEffectChainOnGL(effects, width, height) {
   // 读回最后结果 (最后一个效果输出在 fboA 或 fboB — i 偶数 → fboA)
   const finalFbo = (lastIdx % 2 === 0) ? fboA : fboB;
   gl.bindFramebuffer(gl.FRAMEBUFFER, finalFbo.fbo);
-  gl.finish();
+  // 注: 此处原先有 gl.finish()。已删除 —— 下面的 readPixels 本身即隐式同步点。
   const out = new Uint8Array(width * height * 4);
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, out);
   return { width, height, rgba: out };
